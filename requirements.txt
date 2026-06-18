@@ -1,0 +1,5 @@
+# 상상공방 Lite MCP 서버
+# 서버 런타임 최소 의존성.
+mcp>=1.9.0
+# LLM 호출용. 키/LLM_ENABLED 없으면 호출 안 함(지연 import) — stub fallback 동작.
+anthropic>=0.40.0

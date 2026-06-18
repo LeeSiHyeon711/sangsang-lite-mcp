@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# 비밀 — 절대 커밋 금지 (.env.example만 추적)
+.env
+.env.*
+!.env.example
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
