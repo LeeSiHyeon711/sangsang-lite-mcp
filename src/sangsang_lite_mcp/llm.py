@@ -161,10 +161,13 @@ def _coerce_budget(value: str | None) -> str:
 # --------------------------------------------------------------------------- #
 # STUB (규칙기반, 결정적) — fallback의 기준
 # --------------------------------------------------------------------------- #
-def _prepare_intake_stub(idea_text: str, time_budget: str) -> IntakeData:
+def _prepare_intake_stub(
+    idea_text: str, time_budget: str, clarification_answer: str | None = None
+) -> IntakeData:
     text = (idea_text or "").strip()
     summary = (text[:120] + "…") if len(text) > 120 else (text or "(입력 없음)")
     pain_source = "SELF" if ("내가" in text or "제가" in text or "나는" in text) else "IMAGINED"
+    answered = bool(clarification_answer and clarification_answer.strip())
     return IntakeData(
         input_summary=summary,
         service_type=_guess_service_type(text),  # type: ignore[arg-type]
@@ -174,7 +177,8 @@ def _prepare_intake_stub(idea_text: str, time_budget: str) -> IntakeData:
         maturity="RAW",
         validation_time_budget=_coerce_budget(time_budget),  # type: ignore[arg-type]
         needs_clarification=False,
-        clarifying_question=None,
+        clarifying_question=None,  # 추가 답변 수신 시에도 null 유지(req 1)
+        constraints=([clarification_answer.strip()] if answered else []),  # type: ignore[union-attr]
     )
 
 
@@ -219,17 +223,27 @@ def _design_stub(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
 # --------------------------------------------------------------------------- #
 # LLM 경로 (최소 프롬프트 — 고도화 금지) — 실패 시 예외 던져 orchestrator가 fallback
 # --------------------------------------------------------------------------- #
-def prepare_intake_llm(idea_text: str, time_budget: str) -> IntakeData:
+def prepare_intake_llm(
+    idea_text: str, time_budget: str, clarification_answer: str | None = None
+) -> IntakeData:
+    answered = bool(clarification_answer and clarification_answer.strip())
     prompt = (
-        "다음 아이디어 서술을 공방 접수용 JSON으로만 정리해. 코드블록·설명 금지, JSON만.\n"
+        "다음 아이디어 서술(과 추가 답변)을 공방 접수용 JSON으로만 정리해. 코드블록·설명 금지, JSON만.\n"
         "필드: idea_summary(str), problem(str), target_user(str), "
         "pain_source(SELF|OBSERVED|ASSUMED|IMAGINED), maturity(RAW|SITUATION|PROBLEM|SOLUTION), "
         "validation_time_budget(30_MIN|TODAY|TWO_DAYS|ONE_WEEK|TWO_WEEKS_PLUS|UNKNOWN), "
-        "needs_clarification(bool), clarifying_question(str|null).\n"
+        "needs_clarification(bool), clarifying_question(str|null), "
+        "assumptions(확정 가정 str배열), constraints(명시 제약·MVP 제외·입력 주체 확정 str배열).\n"
+        "추가 답변에서 드러난 제약/범위/입력 주체는 반드시 constraints에, 확정 가정은 assumptions에 넣어라. "
+        "추가 답변으로 해소됐으면 needs_clarification=false, clarifying_question=null.\n"
         f"검증 가능 시간 힌트: {time_budget}\n"
-        f"서술: {idea_text}"
+        f"서술: {idea_text}\n"
+        + (f"추가 답변: {clarification_answer}\n" if answered else "")
     )
-    data = _parse_json(call_anthropic(prompt, max_tokens=500, prefill="{"))
+    data = _parse_json(call_anthropic(prompt, max_tokens=600, prefill="{"))
+    # 추가 답변을 받았으면 clarifying_question은 무조건 정리(null) — req 1
+    needs = False if answered else bool(data.get("needs_clarification", False))
+    question = None if answered else (data.get("clarifying_question") or None)
     return IntakeData(
         input_summary=str(data.get("idea_summary") or idea_text)[:200],
         service_type=_guess_service_type(idea_text),  # type: ignore[arg-type]
@@ -238,8 +252,10 @@ def prepare_intake_llm(idea_text: str, time_budget: str) -> IntakeData:
         pain_source=data.get("pain_source", "IMAGINED"),
         maturity=data.get("maturity", "RAW"),
         validation_time_budget=_coerce_budget(data.get("validation_time_budget") or time_budget),  # type: ignore[arg-type]
-        needs_clarification=bool(data.get("needs_clarification", False)),
-        clarifying_question=(data.get("clarifying_question") or None),
+        needs_clarification=needs,
+        clarifying_question=question,
+        assumptions=[str(x) for x in (data.get("assumptions") or [])][:5],
+        constraints=[str(x) for x in (data.get("constraints") or [])][:5],
     )
 
 
@@ -249,7 +265,11 @@ def diagnose_idea_llm(intake: IntakeData) -> Diagnosis:
         "필드: crack_point(str), misread_risks(최대2 str배열), positive_signals(최대2 str배열), "
         "diagnosis_focus(PROBLEM_EXISTENCE|PAIN_INTENSITY|SOLUTION_FIT|WILLINGNESS|FEASIBILITY|"
         "CONTEXT_OF_USE|OPERATION_FIT|PROBLEM_CAUSE_FIT).\n"
-        "비난 말고 '먼저 확인할 지점'으로. SELF면 문제 존재를 묻지 말 것.\n"
+        "★ constraints/assumptions는 '확정 사실'이다. 이미 정해진 입력 주체·범위·제외 항목을 균열점으로 삼지 말 것"
+        "(예: 입력 주체가 정해졌으면 '주체 미정'이 아니라 '그 주체가 그 일을 할 만큼 효용/지속 의지가 큰가'를 본다). "
+        "clarifying_question은 참고만 — 이미 답이 있으면 무시. 비난 말고 '먼저 확인할 지점'으로. SELF면 문제 존재를 묻지 말 것.\n"
+        f"constraints(반드시 준수): {intake.constraints}\n"
+        f"assumptions(확정): {intake.assumptions}\n"
         f"접수: {intake.model_dump_json()}"
     )
     data = _parse_json(call_anthropic(prompt, max_tokens=500, prefill="{"))
@@ -269,9 +289,12 @@ def design_first_experiment_llm(intake: IntakeData, diagnosis: Diagnosis) -> Fir
         "균열점과 시간 예산으로 '첫 검증 미션'을 설계해 JSON만 반환해. 개발 말고 수동/노코드/질문 우선. 짧게. JSON만.\n"
         "필드: mission_title(str), mission_steps(최대3 str배열), why_this_experiment(1~2문장 str), "
         "success_criteria(1개 str배열), do_not_build_yet(최대2 str배열), next_step_if_passed(str).\n"
+        "★ constraints를 반드시 지킨다 — 위반하는 실험 금지(예: 제외된 연동·정해진 입력 주체를 바꾸는 실험 금지). "
+        "constraints에 정해진 범위 안에서 균열점을 검증하라.\n"
+        f"constraints(반드시 준수): {intake.constraints}\n"
         f"시간예산: {intake.validation_time_budget} / 균열점: {diagnosis.crack_point}"
     )
-    data = _parse_json(call_anthropic(prompt, max_tokens=500, prefill="{"))  # 출력 축소로 지연↓
+    data = _parse_json(call_anthropic(prompt, max_tokens=700, prefill="{"))  # 제약 반영으로 출력↑ → 잘림 방지
     label = _BUDGET_LABEL.get(intake.validation_time_budget, "미정")
     return FirstExperiment(
         time_budget=label,
@@ -288,18 +311,20 @@ def design_first_experiment_llm(intake: IntakeData, diagnosis: Diagnosis) -> Fir
 # --------------------------------------------------------------------------- #
 # orchestrator — tool이 호출하는 진입점 (LLM 시도 → 실패 시 stub). 항상 성공.
 # --------------------------------------------------------------------------- #
-def prepare_intake(idea_text: str, time_budget: str = "UNKNOWN") -> IntakeData:
+def prepare_intake(
+    idea_text: str, time_budget: str = "UNKNOWN", clarification_answer: str | None = None
+) -> IntakeData:
     reason = _block_reason()
     if reason is None:
         try:
-            res = prepare_intake_llm(idea_text, time_budget)
+            res = prepare_intake_llm(idea_text, time_budget, clarification_answer)
             res.meta = ToolMeta(source="llm")
             return res
         except LLMTimeout:
             reason = "timeout"
         except Exception:  # noqa: BLE001 (LLMError·검증오류 등 → fallback)
             reason = "api_error"
-    res = _prepare_intake_stub(idea_text, time_budget)
+    res = _prepare_intake_stub(idea_text, time_budget, clarification_answer)
     res.meta = ToolMeta(source="stub", fallback_reason=reason)  # type: ignore[arg-type]
     return res
 

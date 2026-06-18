@@ -47,7 +47,9 @@ class IntakeData(BaseModel):
     maturity: Maturity = Field(default="RAW", description="아이디어 성숙도")
     validation_time_budget: TimeBudget = Field(default="UNKNOWN", description="검증 투자 가능 시간")
     needs_clarification: bool = Field(default=False, description="추가 질문 필요 여부")
-    clarifying_question: Optional[str] = Field(default=None, description="필요 시 사용자에게 물을 질문 1개")
+    clarifying_question: Optional[str] = Field(default=None, description="필요 시 사용자에게 물을 질문 1개(추가 답변 수신 시 null)")
+    assumptions: list[str] = Field(default_factory=list, description="확정된 가정(추가 답변으로 해소된 것 포함)")
+    constraints: list[str] = Field(default_factory=list, description="명시된 제약(MVP 범위/제외·입력 주체 확정 등). 진단·실험이 반드시 따른다")
     meta: Optional[ToolMeta] = Field(default=None, description="결과 출처(llm/stub) 메타")
 
 
