@@ -74,10 +74,25 @@ class Diagnosis(BaseModel):
     meta: Optional[ToolMeta] = Field(default=None, description="결과 출처(llm/stub) 메타")
 
 
+class ValidationReadiness(BaseModel):
+    """검증 준비도 점수(100) — '아이디어가 검증 가능한 형태로 얼마나 정리됐는가'.
+
+    ※ 사업성/성공 가능성 점수가 아니다. 사용자 평가가 아니라 '정리도' 피드백.
+    """
+
+    total: int = Field(description="검증 준비도 점수(0~100)")
+    target_user_clarity: int = Field(description="대상 사용자 명확도 /25")
+    problem_intensity: int = Field(description="문제·불편 강도 /25")
+    context_specificity: int = Field(description="사용 상황 구체성 /25")
+    verifiable_in_48h: int = Field(description="48시간 검증 가능성 /25")
+    one_line: str = Field(description="한 줄 평(단정 금지, '아직 확인 필요'를 균열점과 연동)")
+
+
 class FirstExperiment(BaseModel):
     """첫 검증 미션 (docs/06)."""
 
     time_budget: str = Field(description="사용자가 선택한 시간(표시용)")
+    readiness: Optional[ValidationReadiness] = Field(default=None, description="검증 준비도 점수(결과카드용)")
     mission_title: str
     mission_steps: list[str]
     why_this_experiment: str = Field(default="", description="이 미션이 어떤 전제를 싸게 확인하는지")

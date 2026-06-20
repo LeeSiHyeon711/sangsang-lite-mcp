@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from .schemas import Diagnosis, FirstExperiment, IntakeData
+from .schemas import Diagnosis, FirstExperiment, IntakeData, ValidationReadiness
 
 _VALID_BUDGETS = {"30_MIN", "TODAY", "TWO_DAYS", "ONE_WEEK", "TWO_WEEKS_PLUS", "UNKNOWN"}
 _LIGHT_BUDGETS = {"30_MIN", "TODAY", "TWO_DAYS", "UNKNOWN"}
@@ -297,6 +297,57 @@ def prepare_intake(
 
 
 # --------------------------------------------------------------------------- #
+# 검증 준비도 점수 (룰 기반) — '아이디어가 검증 가능한 형태로 얼마나 정리됐는가'
+#   ※ 사업성/성공 가능성 아님. 단정 표현 금지.
+# --------------------------------------------------------------------------- #
+# 한 줄 평의 '아직 확인 필요' 부분 — 균열점(focus)과 연동
+_FOCUS_NEED = {
+    "WILLINGNESS": "사용자가 실제로 그 행동을 꾸준히 할 만큼 동기가 있는지는 아직 확인이 필요합니다",
+    "PAIN_INTENSITY": "사용자가 실제로 행동을 바꿀 만큼 불편한지는 아직 확인이 필요합니다",
+    "PROBLEM_EXISTENCE": "이 문제를 실제로 겪는 사람이 있는지는 아직 확인이 필요합니다",
+    "SOLUTION_FIT": "이 방식이 문제에 정말 맞는지는 아직 확인이 필요합니다",
+    "FEASIBILITY": "실제 환경에서 작동하는지는 아직 확인이 필요합니다",
+    "CONTEXT_OF_USE": "어떤 순간에 쓰는지가 아직 더 구체화될 필요가 있습니다",
+    "OPERATION_FIT": "오래 유지·운영할 수 있는지는 아직 확인이 필요합니다",
+    "PROBLEM_CAUSE_FIT": "진짜 원인을 겨냥하는지는 아직 확인이 필요합니다",
+}
+
+
+def _readiness(intake: IntakeData, diagnosis: Diagnosis) -> ValidationReadiness:
+    tu = (intake.target_user or "").strip()
+    # 1) 대상 사용자 명확도 /25 — 비어있음<일반 라벨<원문 구체 구절
+    s1 = 8 if not tu else (24 if len(tu) >= 5 else 18)
+    # 2) 문제·불편 강도 /25 — 텍스트로 '강도'를 단정할 수 없으므로 보수적(표현 유무·경험 근거만 가산, 최대 20)
+    s2 = 12 + (4 if intake.problem else 0) + (4 if intake.pain_source in ("SELF", "OBSERVED") else 0)
+    # 3) 사용 상황 구체성 /25
+    if intake.context_of_use:
+        s3 = 23 if intake.desired_behavior else 21
+    else:
+        s3 = 9
+    # 4) 48시간 검증 가능성 /25 — 정의된 필드 수 + 짧은 시간예산 + 범위(제약)
+    defined = sum(bool(x) for x in (tu, intake.context_of_use, intake.desired_behavior))
+    s4 = min(25, 8 + defined * 4 + (2 if intake.validation_time_budget in _LIGHT_BUDGETS else 0) + (1 if intake.constraints else 0))
+
+    dims = [("대상 사용자", s1), ("문제·불편", s2), ("사용 상황", s3), ("48시간 검증 가능성", s4)]
+    highs = [n for n, sc in dims if sc / 25 >= 0.8][:2]
+    need = _FOCUS_NEED.get(diagnosis.diagnosis_focus, "한 가지 핵심 전제는 아직 확인이 필요합니다")
+    if highs:
+        ht = " · ".join(highs)
+        one_line = f"{ht}{_josa(ht, ('은', '는'))} 비교적 선명하지만, {need}"
+    else:
+        one_line = f"아직 더 또렷하게 정리하면 좋고, {need}"
+
+    return ValidationReadiness(
+        total=s1 + s2 + s3 + s4,
+        target_user_clarity=s1,
+        problem_intensity=s2,
+        context_specificity=s3,
+        verifiable_in_48h=s4,
+        one_line=one_line,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # 입력 방어 — 카카오 AI가 정규화 전 {idea_text, time_budget}를 intake로 넘긴 경우 복구
 # --------------------------------------------------------------------------- #
 def _ensure_normalized(intake: IntakeData) -> IntakeData:
@@ -369,6 +420,7 @@ def design(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
 
     return FirstExperiment(
         time_budget=_BUDGET_LABEL.get(budget, "미정"),
+        readiness=_readiness(intake, diagnosis),
         mission_title=f"균열점 확인: {diagnosis.crack_point}",
         mission_steps=steps[:3],
         why_this_experiment=(
