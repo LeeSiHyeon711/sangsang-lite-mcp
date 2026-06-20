@@ -24,6 +24,8 @@ DEFAULT_MODEL = "claude-haiku-4-5"  # 가벼운 기본값 (MODEL_NAME 으로 ove
 DEFAULT_TIMEOUT_SECONDS = 2.5
 
 _VALID_BUDGETS = {"30_MIN", "TODAY", "TWO_DAYS", "ONE_WEEK", "TWO_WEEKS_PLUS", "UNKNOWN"}
+# TWO_DAYS 이하 = 48시간 안에 즉시 수행 가능한 경량 실험만 (상상공방 Lite 철학)
+_LIGHT_BUDGETS = {"30_MIN", "TODAY", "TWO_DAYS"}
 
 _BUDGET_LABEL = {
     "30_MIN": "30분 이내",
@@ -203,7 +205,7 @@ def _design_stub(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
     elif budget == "TODAY":
         steps = ["짧은 메시지로 3명에게 질문", "응답 소규모 수집", "수동 정리"]
     elif budget == "TWO_DAYS":
-        steps = ["대상 사용자 3~10명 인터뷰/구글폼", "반응 수집", "수동 테스트"]
+        steps = ["아는 대상 1~3명에게 카톡/구글시트로 직접 기록 요청", "48h 내 자발적 기록 여부 확인", "한 줄 피드백 수집"]
     elif budget == "ONE_WEEK":
         steps = ["작은 파일럿 운영", "반복 사용 확인", "결과 기록"]
     else:  # TWO_WEEKS_PLUS
@@ -285,14 +287,22 @@ def diagnose_idea_llm(intake: IntakeData) -> Diagnosis:
 
 
 def design_first_experiment_llm(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
+    light_rule = ""
+    if intake.validation_time_budget in _LIGHT_BUDGETS:
+        light_rule = (
+            "★ 시간 예산이 TWO_DAYS 이하다. 실험은 **혼자 또는 1~3명 협조자로 48시간 안에 실제로 수행 가능한** 수준으로만 설계한다. "
+            "5명 이상 모집·30분 이상 정식 인터뷰·복잡한 템플릿 제작·정식 프로토타입 개발은 금지. "
+            "카카오톡(나에게 보내기)·구글시트·종이 메모·짧은 DM 질문처럼 **즉시 가능한** 방식으로. 균열점 1개만 직접 겨냥.\n"
+        )
     prompt = (
         "균열점과 시간 예산으로 '첫 검증 미션'을 설계해 JSON만 반환해. 개발 말고 수동/노코드/질문 우선. 짧게. JSON만.\n"
         "필드: mission_title(str), mission_steps(최대3 str배열), why_this_experiment(1~2문장 str), "
         "success_criteria(1개 str배열), do_not_build_yet(최대2 str배열), next_step_if_passed(str).\n"
         "★ constraints를 반드시 지킨다 — 위반하는 실험 금지(예: 제외된 연동·정해진 입력 주체를 바꾸는 실험 금지). "
         "constraints에 정해진 범위 안에서 균열점을 검증하라.\n"
-        f"constraints(반드시 준수): {intake.constraints}\n"
-        f"시간예산: {intake.validation_time_budget} / 균열점: {diagnosis.crack_point}"
+        + light_rule
+        + f"constraints(반드시 준수): {intake.constraints}\n"
+        + f"시간예산: {intake.validation_time_budget} / 균열점: {diagnosis.crack_point}"
     )
     data = _parse_json(call_anthropic(prompt, max_tokens=700, prefill="{"))  # 제약 반영으로 출력↑ → 잘림 방지
     label = _BUDGET_LABEL.get(intake.validation_time_budget, "미정")
