@@ -190,21 +190,25 @@ def _default_assumptions(service_type: str, target_user: str) -> list[str]:
     ]
 
 
-def _has_context_of_use(text: str) -> bool:
-    """실제 사용 순간/상황이 드러나는가(전체 추출 아닌 유무 판정)."""
-    return any(k in text for k in ("때", "상황", "순간", "받았을", "콜", "배차", "할 때", "쓸 때", "도중", "중에"))
+def _extract_context(text: str) -> str:
+    """사용 순간/상황 구절 추출(있으면 보존). 앱 이름만으로는 안 잡힘."""
+    m = re.search(r"([^.\n]{0,30}(?:받았을\s*때|할\s*때|쓸\s*때|일\s*때|순간|상황|배차|콜|도중|중에))", text)
+    return m.group(1).strip(" ,.")[:50] if m else ""
 
 
-def _has_desired_behavior(text: str) -> bool:
-    """원하는 핵심 행동이 드러나는가."""
-    return any(k in text for k in ("입력", "기록", "메모", "표시", "알림", "추천", "정리", "저장", "검색", "확인", "관리"))
+def _extract_behavior(text: str) -> str:
+    """핵심 행동 구절 추출(동사부터 시작해 깔끔히). '메모'·'앱' 같은 명사(앱 종류)는 행동으로 보지 않음."""
+    m = re.search(
+        r"((?:직접\s*|자동\s*)?(?:입력|기록|작성|표시|띄우|뜨게|뜨는|알림|추천|정리|저장|검색|공유|관리)[^.\n]{0,12})", text
+    )
+    return m.group(1).strip(" ,.")[:40] if m else ""
 
 
 # 부족 필드별 질문 (이미 말한 건 묻지 않음)
 _CLARIFY_Q = {
-    "target_user": "이 서비스를 가장 먼저 쓸 사람은 누구에 가까운가요? (예: 배달 라이더, 학생)",
-    "context_of_use": "주로 어떤 순간·상황에서 쓰게 될까요? (예: 배차 콜 받았을 때)",
-    "desired_behavior": "사용자가 구체적으로 어떤 행동을 하길 원하나요? (예: 메모 입력, 자동 표시)",
+    "target_user": "이 서비스를 가장 먼저 쓸 사람은 누구인가요? (예: 배달 라이더, 직장인)",
+    "context_of_use": "그 사람이 이게 필요해지는 순간은 언제인가요? (예: 배차 콜 받았을 때)",
+    "desired_behavior": "그때 사용자가 직접 하길 기대하는 행동은 무엇인가요? (예: 메모 입력, 자동 표시)",
 }
 
 
@@ -224,22 +228,39 @@ def prepare_intake(
     for c in _constraints_from_text(combined) + _split_constraints(clarification_answer):
         if c not in constraints:
             constraints.append(c)
-    # 부족 필드 감지 (휴리스틱으로 억지 추출하지 않고 질문으로 위임)
+    context = _extract_context(combined)
+    behavior = _extract_behavior(combined)
+
+    # 필수 확인 3필드: target_user / context_of_use / desired_behavior
     missing = []
     if not target_user:
         missing.append("target_user")
-    if not _has_context_of_use(combined):
+    if not context:
         missing.append("context_of_use")
-    if not _has_desired_behavior(combined):
+    if not behavior:
         missing.append("desired_behavior")
     needs = bool(missing)
-    questions = [_CLARIFY_Q[m] for m in missing][:2] if needs else []  # needs=false면 빈 배열(정합성)
+    # 질문 수: 기본 최대 2개. 매우 부실(3개 모두 부족)이면 최대 3개. 4개 이상 없음.
+    cap = 3 if len(missing) == 3 else 2
+    questions = [_CLARIFY_Q[m] for m in missing][:cap] if needs else []
+
+    # 3개 질문으로도 못 채울 정보는 가정으로 남긴다
+    gaps = []
+    if not target_user:
+        gaps.append("대상 사용자는 가장 흔한 사용자층으로 가정한다")
+    if not context:
+        gaps.append("사용 순간은 반복적으로 생기는 일상 상황으로 가정한다")
+    if not behavior:
+        gaps.append("핵심 행동은 사용자가 직접 입력·기록하는 것으로 가정한다")
+    assume_if_continue = (gaps + _default_assumptions(service_type, target_user))[:3]
 
     return IntakeData(
         input_summary=summary,
         service_type=service_type,  # type: ignore[arg-type]
         problem=_extract_problem(combined),
         target_user=target_user,
+        context_of_use=context,
+        desired_behavior=behavior,
         pain_source=_guess_pain_source(combined),  # type: ignore[arg-type]
         maturity=_guess_maturity(combined),  # type: ignore[arg-type]
         validation_time_budget=_coerce_budget(time_budget),  # type: ignore[arg-type]
@@ -247,7 +268,7 @@ def prepare_intake(
         clarifying_question=(questions[0] if questions else None),
         clarification_questions=questions,
         can_continue_with_assumptions=True,
-        assumptions_if_continue=_default_assumptions(service_type, target_user),
+        assumptions_if_continue=assume_if_continue,
         assumptions=[],  # 사용자가 확정한 것만(현재 없음)
         constraints=constraints[:5],
     )
@@ -279,7 +300,7 @@ def diagnose(intake: IntakeData) -> Diagnosis:
     return Diagnosis(
         problem_statement=intake.problem or "",
         target_user_assumption=f"'{user}'이(가) 이 방식을 실제로 쓸 것이다",
-        context_of_use="",
+        context_of_use=intake.context_of_use,
         crack_point=crack,
         misread_risks=[
             "'좋아 보인다'(관심)와 '실제로 한다'(행동)를 혼동",
