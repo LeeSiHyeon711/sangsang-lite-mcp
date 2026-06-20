@@ -1,11 +1,32 @@
-# 상상공방 Lite — MCP 서버 (골격)
+# 상상공방 Lite — MCP 서버
 
-PlayMCP 제출용 **Streamable HTTP / stateless** MCP 서버 골격.
-설계 근거: [`../../docs/13-streamable-http-examples-research.md`](../../docs/13-streamable-http-examples-research.md)
+PlayMCP 제출용 **Streamable HTTP / stateless** MCP 서버.
+아이디어를 '만들 것'이 아니라 '먼저 확인할 것'으로 바꾸는 검증 도구.
 
-> ⚠️ 이 골격의 목표는 **고품질 진단이 아니라 "통과"**다:
-> 서버 실행 → `/mcp` 열림 → `tools/list` 3개 → annotations 5종 → `tools/call` → Docker build → MCP Inspector 통과.
-> LLM 호출은 `src/sangsang_lite_mcp/llm.py`에 **결정적 stub(규칙기반)**으로 둔다.
+> **등록용 버전은 룰/템플릿 기반(서버 내부 LLM 호출 없음).** 자연어 품질은 PlayMCP AI채팅 본체가 담당하고,
+> 서버는 빠른 '검증 미션 재료'만 반환한다(도구당 p99 < 20ms, 평균 100ms 이하 — 가이드 충족).
+
+---
+
+## ⚠️ 오케스트레이션 원칙 (AI채팅이 지킬 것 — 등록 설명에 그대로 사용)
+
+> PlayMCP 등록 시 "서버 설명" 칸에 아래를 넣으세요. server `instructions` + `prepare_intake` description에도 동일하게 박혀 있습니다.
+
+1. 사용자가 아이디어를 말하면, **짧거나 불완전해도 먼저 `prepare_intake`를 호출**한다.
+2. `prepare_intake` 호출 **전에 AI가 임의로 질문하지 않는다**(주요 기능/문제/사용자/시간 등을 먼저 묻지 말 것).
+3. 부족한 정보는 `prepare_intake`가 `needs_clarification` + `clarification_questions`로 반환한다.
+4. AI는 **`prepare_intake`가 돌려준 `clarification_questions`만** 사용자에게 묻는다.
+5. 사용자가 이미 말한 정보는 다시 묻지 않는다.
+6. `time_budget`을 사용자가 말하지 않으면 묻지 말고 `UNKNOWN`으로 전달한다("48시간"·"2일"→`TWO_DAYS`).
+
+> 호출 순서: `prepare_intake` → (필요 시 질문/답변 반영해 재호출) → `diagnose_idea` → `design_first_experiment`.
+
+```
+Call prepare_intake FIRST whenever the user mentions an idea, even if short or incomplete.
+Do NOT ask clarifying questions before calling it — the tool returns clarification_questions if needed.
+Ask the user ONLY the clarification_questions returned by the tool. Never re-ask what the user already said.
+If time_budget is unspecified, pass UNKNOWN (don't ask); "48h"/"2 days" → TWO_DAYS.
+```
 
 ---
 
