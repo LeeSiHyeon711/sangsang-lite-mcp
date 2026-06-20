@@ -39,7 +39,10 @@ DiagnosisFocus = Literal[
 class IntakeData(BaseModel):
     """소통 에이전트 접수 결과 (docs/03)."""
 
-    input_summary: str = Field(description="아이디어를 한두 문장으로 요약")
+    input_summary: str = Field(default="", description="아이디어를 한두 문장으로 요약")
+    # 방어용: 카카오 AI가 정규화 전 {idea_text, time_budget}를 intake로 넘긴 경우 수용 (diagnose/design이 재정규화)
+    idea_text: Optional[str] = Field(default=None, description="(방어) 정규화 전 원문이 잘못 전달된 경우")
+    time_budget: Optional[str] = Field(default=None, description="(방어) 정규화 전 time_budget이 전달된 경우")
     service_type: ServiceType = Field(default="기타", description="결과물 형태 분류")
     problem: str = Field(default="", description="해결하려는 문제")
     target_user: str = Field(default="", description="처음 쓸 사람")

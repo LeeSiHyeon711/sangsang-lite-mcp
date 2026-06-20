@@ -124,6 +124,24 @@ def _guess_target_user(text: str) -> str:
     return ""
 
 
+def _rich_target_user(text: str, answer: str | None) -> str:
+    """추가 답변이 대상을 설명하면 그 구절을 최대한 보존(과도 축약 금지).
+
+    예: '미팅이나 일정이 많은 직장인 대상이야' → '미팅이나 일정이 많은 직장인'
+    """
+    ans = (answer or "").strip()
+    if ans:
+        m = re.search(r"(.+?)\s*(?:대상|사용자|쓸\s*사람|이\s*쓸|을\s*위한|를\s*위한)", ans)
+        if m:
+            phrase = re.sub(r"^(주\s*사용자는|대상은|사용자는)\s*", "", m.group(1)).strip(" ,.")
+            if 2 <= len(phrase) <= 40:
+                return phrase
+        # '대상' 표현은 없지만 사용자 키워드가 답변에 있고 짧으면 답변 자체를 대상 구절로
+        if any(any(k in ans for k in kws) for kws, _ in _USER_RULES) and len(ans) <= 40:
+            return ans.rstrip(" .야요다이").strip()
+    return _guess_target_user(text + " " + ans)
+
+
 _PROBLEM_TRIGGERS = ("기억하기 어렵", "기억이 안", "까먹", "관리하기 어렵", "관리가 어렵",
                      "헷갈", "번거롭", "잊어", "외우기 어렵", "매번")
 
@@ -200,7 +218,7 @@ def prepare_intake(
     combined = text + " " + (clarification_answer or "")
     summary = (text[:140] + "…") if len(text) > 140 else (text or "(입력 없음)")
     service_type = _guess_service_type(text)
-    target_user = _guess_target_user(combined)
+    target_user = _rich_target_user(text, clarification_answer)
     # 제약: idea_text 정규화 + 추가 답변 분해 (중복 제거, 순서 보존)
     constraints: list[str] = []
     for c in _constraints_from_text(combined) + _split_constraints(clarification_answer):
@@ -214,7 +232,8 @@ def prepare_intake(
         missing.append("context_of_use")
     if not _has_desired_behavior(combined):
         missing.append("desired_behavior")
-    questions = [_CLARIFY_Q[m] for m in missing][:2]  # 최대 2개
+    needs = bool(missing)
+    questions = [_CLARIFY_Q[m] for m in missing][:2] if needs else []  # needs=false면 빈 배열(정합성)
 
     return IntakeData(
         input_summary=summary,
@@ -224,7 +243,7 @@ def prepare_intake(
         pain_source=_guess_pain_source(combined),  # type: ignore[arg-type]
         maturity=_guess_maturity(combined),  # type: ignore[arg-type]
         validation_time_budget=_coerce_budget(time_budget),  # type: ignore[arg-type]
-        needs_clarification=bool(missing),
+        needs_clarification=needs,
         clarifying_question=(questions[0] if questions else None),
         clarification_questions=questions,
         can_continue_with_assumptions=True,
@@ -235,9 +254,19 @@ def prepare_intake(
 
 
 # --------------------------------------------------------------------------- #
+# 입력 방어 — 카카오 AI가 정규화 전 {idea_text, time_budget}를 intake로 넘긴 경우 복구
+# --------------------------------------------------------------------------- #
+def _ensure_normalized(intake: IntakeData) -> IntakeData:
+    if not intake.input_summary and intake.idea_text:
+        return prepare_intake(intake.idea_text, intake.time_budget or "TWO_DAYS")
+    return intake
+
+
+# --------------------------------------------------------------------------- #
 # 2) diagnose_idea — 포커스 기반 균열점 템플릿
 # --------------------------------------------------------------------------- #
 def diagnose(intake: IntakeData) -> Diagnosis:
+    intake = _ensure_normalized(intake)
     focus = _FOCUS_BY_SOURCE.get(intake.pain_source, _DEFAULT_FOCUS)
     user = intake.target_user or "사용자"
     # 해결책(SOLUTION)이 있고 방식·주체가 constraints로 정해졌으면, 핵심 위험은 '실제로 할 의지'(WILLINGNESS)
@@ -265,6 +294,7 @@ def diagnose(intake: IntakeData) -> Diagnosis:
 # 3) design_first_experiment — (focus, time_budget, service_type) 기반 미션 템플릿
 # --------------------------------------------------------------------------- #
 def design(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
+    intake = _ensure_normalized(intake)
     budget = intake.validation_time_budget if intake.validation_time_budget in _BUDGET else "UNKNOWN"
     b = _BUDGET[budget]
     focus = diagnosis.diagnosis_focus if diagnosis.diagnosis_focus in _FOCUS else _DEFAULT_FOCUS
