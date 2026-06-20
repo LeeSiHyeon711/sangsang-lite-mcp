@@ -77,22 +77,25 @@ class Diagnosis(BaseModel):
 class ValidationReadiness(BaseModel):
     """검증 준비도 점수(100) — '아이디어가 검증 가능한 형태로 얼마나 정리됐는가'.
 
-    ※ 사업성/성공 가능성 점수가 아니다. 사용자 평가가 아니라 '정리도' 피드백.
+    ※ 아이디어 성공 가능성/사업성 점수가 아니다. 사용자/아이디어 평가가 아니라 '정리도' 피드백.
     """
 
     total: int = Field(description="검증 준비도 점수(0~100)")
-    target_user_clarity: int = Field(description="대상 사용자 명확도 /25")
-    problem_intensity: int = Field(description="문제·불편 강도 /25")
-    context_specificity: int = Field(description="사용 상황 구체성 /25")
-    verifiable_in_48h: int = Field(description="48시간 검증 가능성 /25")
-    one_line: str = Field(description="한 줄 평(단정 금지, '아직 확인 필요'를 균열점과 연동)")
+    target_clarity: int = Field(description="대상 명확도 /25 (target_user가 구체적일수록 높음)")
+    problem_signal: int = Field(description="문제 강도 단서 /25 (problem/pain_source 단서가 구체적일수록 높음)")
+    context_specificity: int = Field(description="사용 상황 구체성 /25 (context_of_use가 구체적일수록 높음)")
+    small_experiment_feasibility: int = Field(description="작은 실험 가능성 /25 (짧은 시간·수동 검증 가능할수록 높음)")
+    one_line: str = Field(description="한 줄 진단(단정 금지, '아직 확인 필요'를 균열점과 연동)")
 
 
 class FirstExperiment(BaseModel):
     """첫 검증 미션 (docs/06)."""
 
     time_budget: str = Field(description="사용자가 선택한 시간(표시용)")
-    readiness: Optional[ValidationReadiness] = Field(default=None, description="검증 준비도 점수(결과카드용)")
+    # ★ 최종 결과카드에 반드시 노출할 점수. 카카오 AI는 readiness_summary를 답변 맨 위에 그대로 출력한다.
+    validation_readiness_score: int = Field(default=0, description="검증 준비도 점수(0~100). 최종 카드에 '검증 준비도: N/100'으로 반드시 표시")
+    readiness_summary: str = Field(default="", description="최종 결과카드 맨 위에 그대로 출력할 검증 준비도 블록(점수+세부4+한 줄 진단)")
+    readiness: Optional[ValidationReadiness] = Field(default=None, description="검증 준비도 세부(구조화)")
     mission_title: str
     mission_steps: list[str]
     why_this_experiment: str = Field(default="", description="이 미션이 어떤 전제를 싸게 확인하는지")

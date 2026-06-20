@@ -315,34 +315,40 @@ _FOCUS_NEED = {
 
 def _readiness(intake: IntakeData, diagnosis: Diagnosis) -> ValidationReadiness:
     tu = (intake.target_user or "").strip()
-    # 1) 대상 사용자 명확도 /25 — 비어있음<일반 라벨<원문 구체 구절
+    # 1) 대상 명확도 /25 — 비어있음<일반 라벨<원문 구체 구절
     s1 = 8 if not tu else (24 if len(tu) >= 5 else 18)
-    # 2) 문제·불편 강도 /25 — 텍스트로 '강도'를 단정할 수 없으므로 보수적(표현 유무·경험 근거만 가산, 최대 20)
+    # 2) 문제 강도 단서 /25 — 텍스트로 '강도'를 단정할 수 없으므로 보수적(표현 유무·경험 근거만, 최대 20)
+    #    problem 비어 있으면 가산 없음(감점 효과)
     s2 = 12 + (4 if intake.problem else 0) + (4 if intake.pain_source in ("SELF", "OBSERVED") else 0)
-    # 3) 사용 상황 구체성 /25
+    # 3) 사용 상황 구체성 /25 — context_of_use 비어 있으면 감점
     if intake.context_of_use:
         s3 = 23 if intake.desired_behavior else 21
     else:
         s3 = 9
-    # 4) 48시간 검증 가능성 /25 — 정의된 필드 수 + 짧은 시간예산 + 범위(제약)
+    # 4) 작은 실험 가능성 /25 — 정의된 필드 + 짧은 시간(명시) + 범위(제약), needs_clarification면 감점
     defined = sum(bool(x) for x in (tu, intake.context_of_use, intake.desired_behavior))
-    s4 = min(25, 8 + defined * 4 + (2 if intake.validation_time_budget in _LIGHT_BUDGETS else 0) + (1 if intake.constraints else 0))
+    explicit_short = intake.validation_time_budget in ("30_MIN", "TODAY", "TWO_DAYS")
+    s4 = 8 + defined * 4 + (2 if explicit_short else 0) + (1 if intake.constraints else 0)
+    if intake.needs_clarification:
+        s4 -= 2
+    s4 = max(0, min(25, s4))
 
-    dims = [("대상 사용자", s1), ("문제·불편", s2), ("사용 상황", s3), ("48시간 검증 가능성", s4)]
+    dims = [("대상", s1), ("사용 상황", s3), ("문제 강도 단서", s2), ("작은 실험 가능성", s4)]
     highs = [n for n, sc in dims if sc / 25 >= 0.8][:2]
     need = _FOCUS_NEED.get(diagnosis.diagnosis_focus, "한 가지 핵심 전제는 아직 확인이 필요합니다")
+    # one_line은 항상 '...확인이 필요합니다'로 끝나 과도한 확신을 피한다(가정 기반임을 내포)
     if highs:
         ht = " · ".join(highs)
         one_line = f"{ht}{_josa(ht, ('은', '는'))} 비교적 선명하지만, {need}"
     else:
-        one_line = f"아직 더 또렷하게 정리하면 좋고, {need}"
+        one_line = f"아직 검증 가능한 형태로 더 정리하면 좋고, {need}"
 
     return ValidationReadiness(
         total=s1 + s2 + s3 + s4,
-        target_user_clarity=s1,
-        problem_intensity=s2,
+        target_clarity=s1,
+        problem_signal=s2,
         context_specificity=s3,
-        verifiable_in_48h=s4,
+        small_experiment_feasibility=s4,
         one_line=one_line,
     )
 
@@ -418,9 +424,21 @@ def design(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
             dnb.append("constraints에서 제외한 것(외부 연동 등)")
             break
 
+    rd = _readiness(intake, diagnosis)
+    readiness_summary = (
+        "아이디어 건강검진 결과\n\n"
+        f"검증 준비도: {rd.total}/100\n"
+        f"- 대상 명확도: {rd.target_clarity}/25\n"
+        f"- 문제 강도 단서: {rd.problem_signal}/25\n"
+        f"- 사용 상황 구체성: {rd.context_specificity}/25\n"
+        f"- 작은 실험 가능성: {rd.small_experiment_feasibility}/25\n\n"
+        f"한 줄 진단: {rd.one_line}"
+    )
     return FirstExperiment(
         time_budget=_BUDGET_LABEL.get(budget, "미정"),
-        readiness=_readiness(intake, diagnosis),
+        validation_readiness_score=rd.total,
+        readiness_summary=readiness_summary,
+        readiness=rd,
         mission_title=f"균열점 확인: {diagnosis.crack_point}",
         mission_steps=steps[:3],
         why_this_experiment=(
