@@ -24,14 +24,14 @@ _BUDGET_LABEL = {
     "ONE_WEEK": "1주일 이내", "TWO_WEEKS_PLUS": "2주 이상", "UNKNOWN": "미정",
 }
 
-# 시간 예산별 실험 규모 (숫자·행동·시간 — 성공/실패 기준에 그대로 들어감)
+# 시간 예산별 실험 규모. method/subject의 {a}에 actor(target_user 또는 '협조자')가 주입된다.
 _BUDGET = {
-    "30_MIN":        {"method": "본인 자가 점검 또는 아는 1명에게 카톡으로 질문", "who": "본인이", "n": "1회 이상", "hours": "30분", "scale": "light"},
-    "TODAY":         {"method": "아는 1~2명에게 카톡/DM으로 짧게 질문", "who": "물어본 1~2명 중 1명 이상이", "n": "2회 이상", "hours": "오늘 안(몇 시간)에", "scale": "light"},
-    "TWO_DAYS":      {"method": "아는 1~3명에게 카톡·구글시트·종이 메모로 직접 기록 요청", "who": "협조자 3명 중 2명 이상이", "n": "3회 이상", "hours": "48시간", "scale": "light"},
-    "ONE_WEEK":      {"method": "협조자 3~5명에게 1주간 작은 파일럿 운영", "who": "참여자 3~5명 중 절반 이상이", "n": "주 3회 이상", "hours": "1주일", "scale": "heavy"},
-    "TWO_WEEKS_PLUS":{"method": "노코드/수동 운영 파일럿(협조자 5명+)", "who": "참여자 5명 중 3명 이상이", "n": "반복적으로", "hours": "2주", "scale": "heavy"},
-    "UNKNOWN":       {"method": "아는 1~2명에게 카톡으로 질문(가장 가볍게)", "who": "물어본 1~2명 중 1명 이상이", "n": "2회 이상", "hours": "오늘~내일", "scale": "light"},
+    "30_MIN":        {"method": "{a} 본인 점검 또는 아는 {a} 1명에게 카톡으로 질문", "subject": "{a} 본인(또는 1명)이", "n": "1회 이상", "hours": "30분"},
+    "TODAY":         {"method": "아는 {a} 1~2명에게 카톡/DM으로 짧게 질문", "subject": "{a} 1~2명 중 1명 이상이", "n": "2회 이상", "hours": "오늘 안에"},
+    "TWO_DAYS":      {"method": "아는 {a} 1~3명에게 카톡·구글시트·종이 메모로 직접 기록 요청", "subject": "{a} 3명 중 2명 이상이", "n": "3회 이상", "hours": "48시간"},
+    "ONE_WEEK":      {"method": "{a} 3~5명과 1주간 작은 파일럿 운영", "subject": "{a} 3~5명 중 절반 이상이", "n": "주 3회 이상", "hours": "1주일"},
+    "TWO_WEEKS_PLUS":{"method": "{a} 5명+ 노코드/수동 운영 파일럿", "subject": "{a} 5명 중 3명 이상이", "n": "반복적으로", "hours": "2주"},
+    "UNKNOWN":       {"method": "아는 {a} 1~2명에게 카톡으로 질문(가장 가볍게)", "subject": "{a} 1~2명 중 1명 이상이", "n": "2회 이상", "hours": "오늘~내일"},
 }
 
 # 진단 포커스별 — 균열점·확인 행동(verb 어간)·통과/실패 표현. act는 "{n} {act}하고"에 들어간다.
@@ -83,21 +83,74 @@ def _guess_service_type(text: str) -> str:
 
 
 def _guess_pain_source(text: str) -> str:
-    if any(k in text for k in ("내가", "제가", "나는", "내 ", "나도")):
+    # 1인칭 직접 경험 → SELF
+    if any(k in text for k in ("내가", "제가", "나는", "내 ", "나도", "직접 겪", "겪었", "해봤", "경험했")):
         return "SELF"
-    if any(k in text for k in ("봤", "들었", "주변", "친구", "동료", "들이", "사람들")):
+    # 실제 대상/현장/이유 표현이 있으면 단순 상상이 아님 → OBSERVED
+    actor = any(k in text for k in ("라이더", "기사", "사장", "직원", "사람들", "주변", "친구", "동료", "고객", "사용자들"))
+    grounded = any(k in text for k in ("때문", "현장", "직접", "겪", "봤", "들었", "한다고", "힘들어", "불편해"))
+    if actor and grounded:
         return "OBSERVED"
     if any(k in text for k in ("있을 것", "많을 것", "수요", "니즈")):
         return "ASSUMED"
+    if actor:
+        return "OBSERVED"
     return "IMAGINED"
 
 
 def _guess_maturity(text: str) -> str:
-    if any(k in text for k in ("만들", "앱", "서비스", "기능", "방식으로", "구현", "솔루션")):
+    # 처음 MVP / 검증하려고 → 해결책까지 있는 단계(SOLUTION)
+    if any(k in text for k in ("처음 MVP", "검증하려", "검증하고", "MVP", "만들", "앱", "서비스", "기능", "방식으로", "구현", "솔루션")):
         return "SOLUTION"
     if any(k in text for k in ("문제", "불편", "번거", "어렵", "힘들")):
         return "PROBLEM"
     return "RAW"
+
+
+# idea_text에서 대상 사용자 추출 (라이더 우선)
+_USER_RULES = [
+    (("라이더", "배달"), "배달 라이더"),
+    (("학생",), "학생"),
+    (("직장인", "회사원"), "직장인"),
+    (("자영업", "사장", "소상공", "가게 주인"), "자영업자"),
+    (("개발자",), "개발자"),
+]
+
+
+def _guess_target_user(text: str) -> str:
+    for kws, label in _USER_RULES:
+        if any(k in text for k in kws):
+            return label
+    return ""
+
+
+_PROBLEM_TRIGGERS = ("기억하기 어렵", "기억이 안", "까먹", "관리하기 어렵", "관리가 어렵",
+                     "헷갈", "번거롭", "잊어", "외우기 어렵", "매번")
+
+
+def _extract_problem(text: str) -> str:
+    """문제를 가리키는 표현이 든 문장을 찾아 요약 반영."""
+    for s in re.split(r"[.\n]", text):
+        if any(t in s for t in _PROBLEM_TRIGGERS):
+            s = s.strip()
+            return (s[:120] + "…") if len(s) > 120 else s
+    return ""
+
+
+def _constraints_from_text(text: str) -> list[str]:
+    """idea_text의 범위/방식 표현을 제약으로 정규화(결정적)."""
+    out: list[str] = []
+    if any(k in text for k in ("연동하지 않", "연동 없이", "연동 안", "연동은")):
+        out.append("기존 앱과 직접 연동하지 않음(MVP)")
+    if ("직접 입력" in text and "관리" in text) or "직접 관리" in text:
+        out.append("사용자가 직접 입력·관리")
+    elif "직접 입력" in text:
+        out.append("사용자가 직접 입력")
+    if "수동" in text:
+        out.append("수동 방식으로 운영")
+    if "개인 메모" in text:
+        out.append("개인 메모 방식")
+    return out
 
 
 def _split_constraints(answer: str | None) -> list[str]:
@@ -109,6 +162,34 @@ def _split_constraints(answer: str | None) -> list[str]:
     return out[:5]
 
 
+def _default_assumptions(service_type: str, target_user: str) -> list[str]:
+    u = target_user or "대상 사용자"
+    st = service_type if service_type != "기타" else "이 방식"
+    return [
+        f"{u}가 {st}을(를) 실제로 사용할 의향이 있다",
+        f"{u}의 그 문제가 반복적으로 발생한다",
+        f"{st} 형태가 그 문제 해결에 적합하다",
+    ]
+
+
+def _has_context_of_use(text: str) -> bool:
+    """실제 사용 순간/상황이 드러나는가(전체 추출 아닌 유무 판정)."""
+    return any(k in text for k in ("때", "상황", "순간", "받았을", "콜", "배차", "할 때", "쓸 때", "도중", "중에"))
+
+
+def _has_desired_behavior(text: str) -> bool:
+    """원하는 핵심 행동이 드러나는가."""
+    return any(k in text for k in ("입력", "기록", "메모", "표시", "알림", "추천", "정리", "저장", "검색", "확인", "관리"))
+
+
+# 부족 필드별 질문 (이미 말한 건 묻지 않음)
+_CLARIFY_Q = {
+    "target_user": "이 서비스를 가장 먼저 쓸 사람은 누구에 가까운가요? (예: 배달 라이더, 학생)",
+    "context_of_use": "주로 어떤 순간·상황에서 쓰게 될까요? (예: 배차 콜 받았을 때)",
+    "desired_behavior": "사용자가 구체적으로 어떤 행동을 하길 원하나요? (예: 메모 입력, 자동 표시)",
+}
+
+
 # --------------------------------------------------------------------------- #
 # 1) prepare_intake — 룰 기반 구조화
 # --------------------------------------------------------------------------- #
@@ -116,20 +197,40 @@ def prepare_intake(
     idea_text: str, time_budget: str = "UNKNOWN", clarification_answer: str | None = None
 ) -> IntakeData:
     text = (idea_text or "").strip()
+    combined = text + " " + (clarification_answer or "")
     summary = (text[:140] + "…") if len(text) > 140 else (text or "(입력 없음)")
-    constraints = _split_constraints(clarification_answer)
+    service_type = _guess_service_type(text)
+    target_user = _guess_target_user(combined)
+    # 제약: idea_text 정규화 + 추가 답변 분해 (중복 제거, 순서 보존)
+    constraints: list[str] = []
+    for c in _constraints_from_text(combined) + _split_constraints(clarification_answer):
+        if c not in constraints:
+            constraints.append(c)
+    # 부족 필드 감지 (휴리스틱으로 억지 추출하지 않고 질문으로 위임)
+    missing = []
+    if not target_user:
+        missing.append("target_user")
+    if not _has_context_of_use(combined):
+        missing.append("context_of_use")
+    if not _has_desired_behavior(combined):
+        missing.append("desired_behavior")
+    questions = [_CLARIFY_Q[m] for m in missing][:2]  # 최대 2개
+
     return IntakeData(
         input_summary=summary,
-        service_type=_guess_service_type(text),  # type: ignore[arg-type]
-        problem="",  # 자연어 정제는 PlayMCP 챗이 담당(서버는 재료만)
-        target_user="",
-        pain_source=_guess_pain_source(text),  # type: ignore[arg-type]
-        maturity=_guess_maturity(text),  # type: ignore[arg-type]
+        service_type=service_type,  # type: ignore[arg-type]
+        problem=_extract_problem(combined),
+        target_user=target_user,
+        pain_source=_guess_pain_source(combined),  # type: ignore[arg-type]
+        maturity=_guess_maturity(combined),  # type: ignore[arg-type]
         validation_time_budget=_coerce_budget(time_budget),  # type: ignore[arg-type]
-        needs_clarification=False,
-        clarifying_question=None,
-        assumptions=[],
-        constraints=constraints,
+        needs_clarification=bool(missing),
+        clarifying_question=(questions[0] if questions else None),
+        clarification_questions=questions,
+        can_continue_with_assumptions=True,
+        assumptions_if_continue=_default_assumptions(service_type, target_user),
+        assumptions=[],  # 사용자가 확정한 것만(현재 없음)
+        constraints=constraints[:5],
     )
 
 
@@ -138,12 +239,13 @@ def prepare_intake(
 # --------------------------------------------------------------------------- #
 def diagnose(intake: IntakeData) -> Diagnosis:
     focus = _FOCUS_BY_SOURCE.get(intake.pain_source, _DEFAULT_FOCUS)
-    prof = _FOCUS.get(focus, _FOCUS[_DEFAULT_FOCUS])
     user = intake.target_user or "사용자"
-    # constraints로 입력 주체/범위가 정해졌으면 '주체 미정'이 아니라 효용/지속을 본다
-    if intake.constraints and focus in ("PROBLEM_EXISTENCE", "CONTEXT_OF_USE"):
+    # 해결책(SOLUTION)이 있고 방식·주체가 constraints로 정해졌으면, 핵심 위험은 '실제로 할 의지'(WILLINGNESS)
+    if intake.constraints and (
+        intake.maturity == "SOLUTION" or focus in ("PROBLEM_EXISTENCE", "CONTEXT_OF_USE")
+    ):
         focus = "WILLINGNESS"
-        prof = _FOCUS[focus]
+    prof = _FOCUS.get(focus, _FOCUS[_DEFAULT_FOCUS])
     crack = prof["crack"].format(u=user)
     return Diagnosis(
         problem_statement=intake.problem or "",
@@ -168,13 +270,16 @@ def design(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
     focus = diagnosis.diagnosis_focus if diagnosis.diagnosis_focus in _FOCUS else _DEFAULT_FOCUS
     f = _FOCUS[focus]
 
+    actor = intake.target_user or "협조자"
+    method = b["method"].format(a=actor)
+    subject = b["subject"].format(a=actor)
     steps = [
-        b["method"],
+        method,
         f"{b['hours']} 동안 {f['act']}하는지와 횟수를 기록",
         "끝나고 한 줄 피드백(긍정/부정 표현) 받기",
     ]
     success = (
-        f"{b['hours']} 안에 {b['who']} {b['n']} {f['act']}하고, "
+        f"{b['hours']} 안에 {subject} {b['n']} {f['act']}하고, "
         f"1명 이상이 '{f['yes']}'고 말하면 통과"
     )
     failure = [

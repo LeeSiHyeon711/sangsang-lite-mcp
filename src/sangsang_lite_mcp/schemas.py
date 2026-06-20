@@ -46,11 +46,14 @@ class IntakeData(BaseModel):
     pain_source: PainSource = Field(default="IMAGINED", description="불편함의 출처")
     maturity: Maturity = Field(default="RAW", description="아이디어 성숙도")
     validation_time_budget: TimeBudget = Field(default="UNKNOWN", description="검증 투자 가능 시간")
-    needs_clarification: bool = Field(default=False, description="추가 질문 필요 여부")
-    clarifying_question: Optional[str] = Field(default=None, description="필요 시 사용자에게 물을 질문 1개(추가 답변 수신 시 null)")
-    assumptions: list[str] = Field(default_factory=list, description="확정된 가정(추가 답변으로 해소된 것 포함)")
+    needs_clarification: bool = Field(default=False, description="target_user/context_of_use/desired_behavior 중 빈 값 있으면 true")
+    clarifying_question: Optional[str] = Field(default=None, description="(레거시) 단일 질문. clarification_questions 사용 권장")
+    clarification_questions: list[str] = Field(default_factory=list, description="부족한 필드에 대한 질문 최대 2개(이미 말한 건 묻지 않음)")
+    can_continue_with_assumptions: bool = Field(default=True, description="사용자가 답 안 해도 가정 기반으로 다음 tool 진행 가능한지")
+    assumptions_if_continue: list[str] = Field(default_factory=list, description="질문에 답 없이 진행할 때 사용할 가정")
+    assumptions: list[str] = Field(default_factory=list, description="사용자가 확정한 가정(없으면 빈 값)")
     constraints: list[str] = Field(default_factory=list, description="명시된 제약(MVP 범위/제외·입력 주체 확정 등). 진단·실험이 반드시 따른다")
-    meta: Optional[ToolMeta] = Field(default=None, description="결과 출처(llm/stub) 메타")
+    meta: Optional[ToolMeta] = Field(default=None, description="결과 출처 메타(룰 기반은 비움)")
 
 
 class Diagnosis(BaseModel):
