@@ -300,7 +300,7 @@ def design_first_experiment_llm(intake: IntakeData, diagnosis: Diagnosis) -> Fir
         "success_criteria(1개 str배열), failure_signals(최대2 str배열), do_not_build_yet(최대2 str배열), next_step_if_passed(str).\n"
         "★ success_criteria·failure_signals는 추상 표현 금지 — 사용자가 48시간 뒤 직접 통과/실패를 판정할 수 있게 "
         "숫자·행동·시간 기준을 반드시 포함한다(몇 명 중 몇 명, 몇 시간 안에, 몇 회 이상 행동, 어떤 말을 하면 통과/실패). "
-        "'신호가 보인다'·'반응 없음'처럼 모호한 문장 금지.\n"
+        "'신호가 보인다'·'반응 없음'처럼 모호한 문장 금지. 단 각 항목은 **1문장으로 간결하게**(장황한 수식·괄호 남발 금지).\n"
         "★ next_step_if_passed는 바로 본격 개발이 아니라, 더 작은 다음 미션 또는 최소 수동/노코드 프로토타입으로 이어지게 한다.\n"
         "★ constraints를 반드시 지킨다 — 위반하는 실험 금지(예: 제외된 연동·정해진 입력 주체를 바꾸는 실험 금지). "
         "constraints에 정해진 범위 안에서 균열점을 검증하라.\n"
@@ -308,7 +308,7 @@ def design_first_experiment_llm(intake: IntakeData, diagnosis: Diagnosis) -> Fir
         + f"constraints(반드시 준수): {intake.constraints}\n"
         + f"시간예산: {intake.validation_time_budget} / 균열점: {diagnosis.crack_point}"
     )
-    data = _parse_json(call_anthropic(prompt, max_tokens=800, prefill="{"))  # 필드↑(failure_signals)로 잘림 방지
+    data = _parse_json(call_anthropic(prompt, max_tokens=900, prefill="{"))  # 잘림 방지(간결 제약과 병행)
     label = _BUDGET_LABEL.get(intake.validation_time_budget, "미정")
     return FirstExperiment(
         time_budget=label,
