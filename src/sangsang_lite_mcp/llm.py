@@ -37,13 +37,13 @@ _BUDGET = {
 
 # 진단 포커스별 — 균열점·확인 행동(verb 어간)·통과/실패 표현. act는 "{n} {act}하고"에 들어간다.
 _FOCUS = {
-    "WILLINGNESS":       {"crack": "{u}가 그 행동(입력·관리 등)을 지속할 동기·의지가 충분한가", "act": "자발적으로 직접 실행", "yes": "계속 쓸 것 같다/도움 된다", "no": "번거롭다/필요 없다"},
-    "PROBLEM_EXISTENCE": {"crack": "그 문제를 실제로 겪는 {u}가 존재하는가", "act": "겪는 상황을 구체적으로 언급", "yes": "맞아, 나도 그래서 불편하다", "no": "그건 별 문제 아니다"},
-    "PAIN_INTENSITY":    {"crack": "그 불편이 {u}의 행동을 바꿀 만큼 강한가", "act": "그 불편을 강하게 호소", "yes": "자주 겪어서 짜증난다", "no": "가끔 있지만 참을 만하다"},
+    "WILLINGNESS":       {"crack": "{u}{j} 직접 기록·확인하는 행동을 꾸준히 할 동기·의지가 충분한가", "act": "스스로 직접 기록·확인", "yes": "다음에도 해볼 것 같다/도움 됐다", "no": "번거롭다/다시 안 할 것 같다"},
+    "PROBLEM_EXISTENCE": {"crack": "이 문제를 실제로 겪는 {u}{j} 존재하는가", "act": "겪는 상황을 구체적으로 언급", "yes": "맞아, 나도 그래서 불편하다", "no": "그건 별 문제 아니다"},
+    "PAIN_INTENSITY":    {"crack": "이 문제가 {u}의 행동을 바꿀 만큼 실제로 불편한가", "act": "이 불편을 자주·심하게 겪는다고 언급", "yes": "자주 겪어서 바꾸고 싶다", "no": "가끔 있지만 참을 만하다"},
     "SOLUTION_FIT":      {"crack": "제안한 방식이 {u}의 문제에 실제로 맞는가", "act": "그 방식이 자기 상황에 맞다고 확인", "yes": "이런 방식이면 쓰겠다", "no": "이 방식은 내 상황엔 안 맞다"},
     "FEASIBILITY":       {"crack": "이 방식이 {u}의 환경에서 실제로 작동·실행 가능한가", "act": "실제 환경에서 시도", "yes": "되네, 쓸 만하다", "no": "환경 때문에 안 된다"},
     "CONTEXT_OF_USE":    {"crack": "{u}의 실제 사용 순간과 첫 사용자가 구체적으로 성립하는가", "act": "쓸 순간을 구체적으로 지목", "yes": "이럴 때(구체 상황) 쓰겠다", "no": "딱히 쓸 순간이 안 떠오른다"},
-    "OPERATION_FIT":     {"crack": "{u}가 이 방식을 지속적으로 운영·유지할 수 있는가", "act": "끊기지 않고 반복 수행", "yes": "계속 유지할 수 있겠다", "no": "며칠 만에 흐지부지된다"},
+    "OPERATION_FIT":     {"crack": "{u}{j} 이 방식을 지속적으로 운영·유지할 수 있는가", "act": "끊기지 않고 반복 수행", "yes": "계속 유지할 수 있겠다", "no": "며칠 만에 흐지부지된다"},
     "PROBLEM_CAUSE_FIT": {"crack": "이 해결책이 진짜 원인을 겨냥하는가", "act": "진짜 원인을 짚어 말", "yes": "그게 진짜 원인 맞다", "no": "원인은 다른 데 있다"},
 }
 _DEFAULT_FOCUS = "WILLINGNESS"
@@ -68,6 +68,16 @@ _SERVICE_DNB = {
 # --------------------------------------------------------------------------- #
 def _coerce_budget(value: str | None) -> str:
     return value if value in _VALID_BUDGETS else "UNKNOWN"
+
+
+def _josa(word: str, pair: tuple[str, str] = ("이", "가")) -> str:
+    """종성 유무로 조사 선택(받침 있으면 pair[0], 없으면 pair[1]). 예: 사장님→이, 라이더→가."""
+    if not word:
+        return pair[1]
+    last = word[-1]
+    if "가" <= last <= "힣":
+        return pair[0] if (ord(last) - 0xAC00) % 28 else pair[1]
+    return pair[1]
 
 
 def _guess_service_type(text: str) -> str:
@@ -118,7 +128,18 @@ _USER_RULES = [
 ]
 
 
+# 원문 표현 보존용: '치킨집 사장님' 같은 구절을 일반 라벨로 과도 축약하지 않는다
+_ROLE_NOUNS = (
+    "사장님", "사장", "점주", "라이더", "기사", "학생", "직장인", "회사원", "개발자",
+    "디자이너", "선생님", "간호사", "주부", "상인", "점원", "약사", "의사", "프리랜서",
+)
+_ROLE_RE = re.compile(r"([가-힣]{1,6}(?:\s[가-힣]{1,6})?\s*(?:" + "|".join(_ROLE_NOUNS) + r"))")
+
+
 def _guess_target_user(text: str) -> str:
+    m = _ROLE_RE.search(text)  # 원문 구절 우선 보존(예: '치킨집 사장님')
+    if m:
+        return m.group(1).strip()
     for kws, label in _USER_RULES:
         if any(k in text for k in kws):
             return label
@@ -297,7 +318,7 @@ def diagnose(intake: IntakeData) -> Diagnosis:
     ):
         focus = "WILLINGNESS"
     prof = _FOCUS.get(focus, _FOCUS[_DEFAULT_FOCUS])
-    crack = prof["crack"].format(u=user)
+    crack = prof["crack"].format(u=user, j=_josa(user))
     return Diagnosis(
         problem_statement=intake.problem or "",
         target_user_assumption=f"'{user}'이(가) 이 방식을 실제로 쓸 것이다",
