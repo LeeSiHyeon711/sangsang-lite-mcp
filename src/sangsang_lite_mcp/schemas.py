@@ -57,6 +57,15 @@ class IntakeData(BaseModel):
     assumptions_if_continue: list[str] = Field(default_factory=list, description="질문에 답 없이 진행할 때 사용할 가정")
     assumptions: list[str] = Field(default_factory=list, description="사용자가 확정한 가정(없으면 빈 값)")
     constraints: list[str] = Field(default_factory=list, description="명시된 제약(MVP 범위/제외·입력 주체 확정 등). 진단·실험이 반드시 따른다")
+    # 문진 필드(검증 실행 조건)
+    reachable_testers: str = Field(default="", description="바로 물어보거나 실험해볼 수 있는 사람(예: 1명, 2명 이상, 없음)")
+    current_alternative: str = Field(default="", description="지금 쓰는 대체 방법(예: 메모장, 카톡, 엑셀)")
+    # 1회 문진 UX
+    has_clarified: bool = Field(default=False, description="clarification_answer를 한 번 받았는지(재질문 1회 제한)")
+    understood_summary: str = Field(default="", description="MCP가 이해한 아이디어 한 문장 요약(되묻기 전 확인용)")
+    extracted_fields_summary: str = Field(default="", description="1차 추출 필드를 사람이 읽기 쉽게 정리한 목록")
+    one_shot_clarification_prompt: str = Field(default="", description="부족한 정보를 한 번에 묻는 1회 문진 문구(비우면 기본값 진행)")
+    answer_format_hint: str = Field(default="", description="사용자가 구조화해서 답하도록 돕는 형식 힌트")
     meta: Optional[ToolMeta] = Field(default=None, description="결과 출처 메타(룰 기반은 비움)")
 
 

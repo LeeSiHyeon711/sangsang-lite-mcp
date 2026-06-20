@@ -105,6 +105,10 @@ def _select_focus(intake: "IntakeData") -> str:
         return "WILLINGNESS" if any(k in t for k in _SIG_HABIT) else "DATA_INPUT_BURDEN"
     if any(k in t for k in _SIG_ALT):
         return "ALTERNATIVE_BEHAVIOR"
+    # 사용자가 지금 쓰는 대체 방법을 말했다면, 기존 습관을 이길 수 있는지가 핵심 위험.
+    alt = intake.current_alternative or ""
+    if alt and "직접 확인 필요" not in alt:
+        return "ALTERNATIVE_BEHAVIOR"
     if intake.pain_source in ("SELF", "OBSERVED"):
         return "PAIN_INTENSITY"
     return _DEFAULT_FOCUS
@@ -227,6 +231,19 @@ def _guess_target_user(text: str) -> str:
 _SUBJECT_RE = re.compile(r"^\s*([가-힣]{2,7}(?:\s[가-힣]{1,7})?)(?:가|이)\s")
 
 
+def _trim_modifiers(phrase: str) -> str:
+    """대상 구절에서 동사·형용사 수식어를 떼고 역할 명사만 남긴다.
+    예: '자꾸 까먹는 직장인' → '직장인' (단, '헬스장 회원' 같은 명사 합성은 보존)."""
+    toks = (phrase or "").split()
+    if len(toks) <= 1:
+        return phrase
+    last_mod = -1
+    for idx, tok in enumerate(toks[:-1]):  # 마지막(역할 명사)은 보존
+        if tok in _FREQ or re.search(r"(는|은|던|한|할|운|니|고|서|게|을|를)$", tok):
+            last_mod = idx
+    return " ".join(toks[last_mod + 1:]) if last_mod >= 0 else phrase
+
+
 def _subject_target(text: str) -> str:
     """'편의점 알바가 …', '동호회 운영자가 …'처럼 사전에 없는 주어도 추출."""
     m = _SUBJECT_RE.match(text or "")
@@ -281,30 +298,30 @@ def _extract_problem(text: str) -> str:
 def _problem_sentence(text: str, context: str = "", target: str = "") -> str:
     """문장 패턴으로 problem을 자연스러운 한 문장으로 합성(빈 값/원문통째/부사목적어 방지)."""
     t = _strip_subject(text, target)
-    # 망각/리마인더: 'B 까먹지/잊지 않게' → 'B를 잊는 문제'
-    m = re.search(r"([가-힣 ]{2,20}?)\s*(?:까먹지\s*않게|까먹지\s*않도록|잊지\s*않게|잊지\s*않도록|놓치지\s*않게)", t)
-    if m:
-        b = _strip_subject(m.group(1))
-        if b:
-            return f"{b}{_josa(b, ('을', '를'))} 잊는 문제"
+    # 망각: 'B 까먹지/잊지 않게', 'B 자꾸 까먹는', 'B 잊는' → 'B를 잊는 문제'
+    b = _problem_object(t, r"까먹|잊어버리|잊는|잊지\s*않")
+    if b:
+        return f"{b}{_noun_particle(b)} 잊는 문제"
     # 낭비: 'B 버리기 전에/버리게' → 'B를 버리게 되는 문제'
-    m = re.search(r"([가-힣 ]{2,20}?)\s*버리(?:기|게|는)", t)
-    if m:
-        b = _strip_subject(m.group(1))
-        if b:
-            return f"{b}{_josa(b, ('을', '를'))} 버리게 되는 문제"
+    b = _problem_object(t, r"버리")
+    if b:
+        return f"{b}{_noun_particle(b)} 버리게 되는 문제"
+    # 헷갈림: 'B 헷갈리지 않게/헷갈리는' → 'B를 헷갈리는 문제'
+    b = _problem_object(t, r"헷갈리|헛갈리")
+    if b:
+        return f"{b}{_noun_particle(b)} 헷갈리는 문제"
     # 기록 누락: '... 기록 남기는' → '... 기록을 남기지 못하거나 잊는 문제'
     if "기록" in t:
         m = re.search(r"([가-힣]{2,10})\s*(?:후|직후|뒤)?\s*기록", t)
         if m:
             return f"{m.group(1)} 기록을 남기지 못하거나 잊는 문제"
-    # 일반 동사형: object + (즉시성) + '확인/찾기 어려운 문제'
+    # 일반 동사형: object + (즉시성) + '확인/찾기 어려운 문제'. object가 깨끗할 때만.
     obj, verb, adverb = _object_before(t)
     if obj:
         pv = "찾기" if verb == "찾" else "확인하기"
         speed = "바로 " if (adverb or verb in ("표시", "뜨는", "뜨게", "팝업")) else ""
         return f"{obj}{_josa(obj, ('을', '를'))} {speed}{pv} 어려운 문제"
-    return _extract_problem(t)
+    return ""  # 확신 낮음 → 호출부가 안전 fallback 사용
 
 
 def _constraints_from_text(text: str) -> list[str]:
@@ -384,25 +401,85 @@ _BEH_VERB = {
 }
 
 
+# 빈도 부사(목적어에서 제거 대상)
+_FREQ = ("자꾸", "자주", "매번", "계속", "늘", "항상", "또")
+# 행동 동사(서비스 명사 아님)
+_SERVICE_NOUN = r"(?:앱|어플|애플리케이션|도구|서비스|웹|사이트|시스템|플랫폼|프로그램)"
+
+# 확신이 낮을 때 쓰는 안전 fallback(이상한 문장 대신).
+_FALLBACK_PROBLEM = "사용자가 말한 상황에서 실제 불편이 반복되는지 확인해야 하는 문제"
+_FALLBACK_BEHAVIOR = "필요한 정보를 더 쉽게 확인하거나 정리한다"
+_FALLBACK_TARGET = "사용자"
+
+
+def _clean_clause(s: str) -> str:
+    """맥락절 뒤 부분만 취하고, 빈도·속도 부사와 목적격 조사를 벗겨낸 명사구."""
+    s = re.split(_CTX_TAIL, s)[-1].strip()
+    for _ in range(2):
+        s = re.sub(r"\s*(?:" + "|".join(_ADVERBS + _FREQ) + r")\s*$", "", s).strip()
+    s = re.sub(r"\s*(?:을|를)\s*$", "", s).strip()
+    return s
+
+
+def _valid_object(o: str) -> bool:
+    """목적어 명사구가 '깨끗한지' 검증. 부사·조사 잔여·과길이면 거부(→ fallback)."""
+    if not o or not (2 <= len(o) <= 18):
+        return False
+    if o in _ADVERBS or o in _FREQ:
+        return False
+    if re.search(r"(용|위한|위해|에게|한테|을|를|은|는|이|가)$", o):  # 문법 잔여 누수
+        return False
+    return True
+
+
 def _object_before(action_text: str) -> tuple[str, str, str]:
-    """동사 앞의 목적어 명사구를 추출. 맥락절·부사·조사를 벗겨내 (object, verb, adverb) 반환."""
+    """동사 앞의 목적어 명사구를 추출. 맥락절·부사·조사를 벗겨내 (object, verb, adverb) 반환.
+    object가 깨끗하지 않으면 빈 object를 돌려 호출부가 fallback하게 한다."""
     s = re.sub(r"\s*(?:" + _SERVICE_NOUN + r")\s*$", "", (action_text or "").strip()).strip()
     m = _VERB_RE.search(s)
     if not m:
         return "", "", ""
     verb = m.group(1)
-    before = re.split(_CTX_TAIL, s[:m.start()])[-1].strip()  # 맥락절 뒤 부분만
+    before = re.split(_CTX_TAIL, s[:m.start()])[-1].strip()
     adverb = ""
     am = re.search(r"(" + "|".join(_ADVERBS) + r")\s*$", before)
     if am:
         adverb = am.group(1)
         before = before[:am.start()].strip()
-    obj = re.sub(r"\s*(?:을|를)\s*$", "", before).strip()  # 목적격 조사 제거
+    obj = _clean_clause(before)
+    if not _valid_object(obj):
+        return "", verb, adverb
     return obj, verb, adverb
 
 
-# 행동 동사(서비스 명사 아님)
-_SERVICE_NOUN = r"(?:앱|어플|애플리케이션|도구|서비스|웹|사이트|시스템|플랫폼|프로그램)"
+# 'B 헷갈리지 않게 / B 까먹지 않게' 같은 문제 절에서 B(명사구)를 안전하게 뽑는다.
+def _problem_object(text: str, trigger_re: str) -> str:
+    m = re.search(r"([가-힣 ]{2,28}?)\s*(?:을|를)?\s*(?:" + trigger_re + r")", text)
+    if not m:
+        return ""
+    b = _clean_clause(m.group(1))
+    return b if _valid_object(b) or b.endswith(("지", "는지", "은지")) else ""
+
+
+def _noun_particle(b: str, pair: tuple[str, str] = ("을", "를")) -> str:
+    """명사구 뒤 목적격 조사. 절(…하는지/…나/…면)로 끝나면 조사를 붙이지 않는다."""
+    return "" if b and b[-1] in "지나면음" else _josa(b, pair)
+
+
+# 문장 중간 주어 'X가/이 (부사) 동사' 패턴에서 역할(X)을 잡는다(앞 주어가 없을 때 보조).
+_MID_SUBJECT_RE = re.compile(
+    r"([가-힣]{2,7}(?:\s[가-힣]{1,7})?)(?:가|이)\s+(?:(?:" + "|".join(_ADVERBS) + r")\s*)?"
+    r"(?:확인|조회|보|찾|추천|입력|기록|정리|관리|계산|비교|쓰|사용)"
+)
+
+
+def _mid_subject(text: str) -> str:
+    m = _MID_SUBJECT_RE.search(text or "")
+    if m:
+        cand = m.group(1).strip()
+        if 2 <= len(cand) <= 14:
+            return cand
+    return ""
 
 
 def _behavior_sentence(text: str, context: str = "", target: str = "") -> str:
@@ -430,21 +507,167 @@ def _behavior_sentence(text: str, context: str = "", target: str = "") -> str:
         m = re.search(r"([가-힣]{2,10}(?:\s*(?:후|직후|뒤))?)\s*기록", t)
         act = m.group(1).strip() if m else (context or "활동")
         return f"{act} 기록을 남긴다"
-    # 일반 동사(확인/찾기/보기/정리 등) → object + (속도부사) + 동사
+    # 헷갈림 → '{object}를 바로 확인한다'
+    b = _problem_object(t, r"헷갈리|헛갈리")
+    if b:
+        return f"{b}{_noun_particle(b)} 바로 확인한다"
+    # 일반 동사(확인/찾기/보기/정리 등) → object + (속도부사) + 동사. object가 깨끗할 때만.
     obj, verb, adverb = _object_before(t)
     if obj:
         obj = re.sub(r"^(자신의|내|나의|본인의|제)\s*", "", obj).strip()  # 소유격은 행동에서 생략
         speed = (_SPEED_NORM.get(adverb, "") + " ") if adverb else ""
         return f"{obj}{_josa(obj, ('을', '를'))} {speed}{_BEH_VERB.get(verb, '확인한다')}"
+    return ""  # 확신 낮음 → 호출부가 안전 fallback 사용
+
+
+# --------------------------------------------------------------------------- #
+# 문진 보조: 시간/대상 수/대체 방법 파싱 + 1회 문진 UX 빌더
+# --------------------------------------------------------------------------- #
+_TIME_LABEL = {
+    "30_MIN": "오늘 30분", "TODAY": "오늘 안에", "TWO_DAYS": "오늘 또는 내일",
+    "ONE_WEEK": "이번 주", "TWO_WEEKS_PLUS": "2주 이상", "UNKNOWN": "오늘 또는 내일",
+}
+
+
+def _parse_time_budget(text: str) -> str:
+    t = text or ""
+    if not t:
+        return "UNKNOWN"
+    if "30분" in t or "30 분" in t or "반시간" in t:
+        return "30_MIN"
+    if "주말" in t:
+        return "TWO_DAYS"
+    if any(k in t for k in ("2주", "이 주", "한 달", "이주", "한달")):
+        return "TWO_WEEKS_PLUS"
+    if any(k in t for k in ("1주", "한 주", "일주일", "1 주", "이번 주", "한주")):
+        return "ONE_WEEK"
+    if "오늘" in t and "내일" in t:
+        return "TWO_DAYS"
+    if "내일" in t:
+        return "TWO_DAYS"
+    if "오늘" in t:
+        return "TODAY"
+    return "UNKNOWN"
+
+
+def _parse_testers(text: str) -> str:
+    """답변에서 '바로 물어볼 수 있는 사람' 구절 보존(없으면 빈 값)."""
+    t = (text or "").strip()
+    if not t:
+        return ""
+    for seg in re.split(r"[\n,/]", t):
+        s = seg.strip()
+        if any(k in s for k in ("없어", "없음", "없다", "아무도", "혼자")):
+            return "없음"
+        if "명" in s:
+            return s.strip(" .")[:24]
+    if any(k in t for k in ("여러", "많", "이상")):
+        return "2명 이상"
     return ""
 
 
-# 부족 필드별 질문 (이미 말한 건 묻지 않음)
-_CLARIFY_Q = {
-    "target_user": "이 서비스를 가장 먼저 쓸 사람은 누구인가요? (예: 배달 라이더, 직장인)",
-    "context_of_use": "그 사람이 이게 필요해지는 순간은 언제인가요? (예: 배차 콜 받았을 때)",
-    "desired_behavior": "그때 사용자가 직접 하길 기대하는 행동은 무엇인가요? (예: 메모 입력, 자동 표시)",
+def _tester_category(reachable: str) -> str:
+    r = reachable or ""
+    if "없" in r or "혼자" in r or "아무도" in r:
+        return "NONE"
+    if "이상" in r or "여러" in r or "많" in r:
+        return "MANY"
+    m = re.search(r"(\d+)\s*명", r)
+    if m:
+        return "ONE" if int(m.group(1)) <= 1 else "MANY"
+    return ""
+
+
+_ALT_KEYS = ("메모장", "메모", "카톡", "엑셀", "노트", "다이어리", "수첩", "종이", "기억", "캘린더", "구글", "시트", "장부")
+
+
+def _parse_alternative(text: str) -> str:
+    for seg in re.split(r"[\n,]", (text or "").strip()):
+        s = seg.strip()
+        if any(k in s for k in _ALT_KEYS):
+            return re.sub(r"^((?:지금은|지금|현재|그냥|보통|주로|아직)\s*)+", "", s).strip(" .")[:30]
+    return ""
+
+
+# 라벨형 답변('대상: …') 파싱
+_LABEL_MAP = (
+    ("원하는 행동", "behavior"), ("검증 가능 시간", "time"), ("검증 시간", "time"),
+    ("바로 물어볼 수 있는 사람", "testers"), ("지금 쓰는 대체 방법", "alt"),
+    ("대상", "target"), ("사용자", "target"), ("상황", "context"), ("순간", "context"),
+    ("불편", "problem"), ("문제", "problem"), ("행동", "behavior"),
+    ("시간", "time"), ("실험", "testers"), ("사람", "testers"), ("대체", "alt"),
+)
+
+
+def _parse_labeled_answer(answer: str) -> dict:
+    out: dict = {}
+    for line in re.split(r"[\n]", answer or ""):
+        m = re.match(r"\s*([^:：]{1,18})\s*[:：]\s*(.+)", line)
+        if not m:
+            continue
+        key, val = m.group(1).strip(), m.group(2).strip()
+        for lab, f in _LABEL_MAP:
+            if lab in key and val and f not in out:
+                out[f] = val
+                break
+    return out
+
+
+_FIELD_KO = {"target": "대상", "context": "상황", "problem": "불편한 점", "behavior": "원하는 행동",
+             "time": "검증 가능 시간", "testers": "바로 물어볼 수 있는 사람", "alt": "지금 쓰는 대체 방법"}
+_FIELD_EG = {
+    "target": "예) 배달 라이더, 직장인, 자취생", "context": "예) 콜 받을 때, 회의 끝나고",
+    "problem": "예) 자꾸 까먹는다, 매번 헷갈린다", "behavior": "예) 바로 확인한다, 체크리스트로 정리한다",
+    "time": "예) 오늘 30분 / 오늘 또는 내일 / 이번 주말 / 1주일",
+    "testers": "예) 없음 / 1명 / 2명 이상", "alt": "예) 메모장, 카톡, 엑셀, 기억에 의존",
 }
+
+
+def _build_understood(target: str, context: str, behavior: str, summary: str) -> str:
+    who = target or "사용자"
+    phrase = behavior + ("는" if behavior.endswith("다") else "") if behavior else ""
+    if context and phrase:
+        return f"제가 이해한 바로는, {who}{_josa(who)} {context} 상황에서 {phrase} 아이디어예요."
+    if phrase:
+        return f"제가 이해한 바로는, {who}{_josa(who)} {phrase} 아이디어예요."
+    return f"제가 이해한 바로는, '{summary}' 아이디어예요."
+
+
+def _build_extracted_summary(target: str, context: str, problem: str, behavior: str) -> str:
+    lines = ["현재 이렇게 이해했어요."]
+    if target:
+        lines.append(f"- 대상: {target}")
+    if context:
+        lines.append(f"- 상황: {context}")
+    if problem:
+        lines.append(f"- 불편한 점: {problem}")
+    if behavior:
+        lines.append(f"- 원하는 행동: {behavior}")
+    return "\n".join(lines)
+
+
+def _build_oneshot(ask: list[str]) -> str:
+    body = "\n".join(f"{_FIELD_KO[k]}: {_FIELD_EG[k]}" for k in ask)
+    return "맞다면 아래 정보만 추가로 알려주세요. 일부는 비워도 기본값으로 진행할게요.\n\n" + body
+
+
+def _build_format_hint(ask: list[str]) -> str:
+    body = "\n".join(f"{_FIELD_KO[k]}:" for k in ask)
+    return "아래 형식으로 답해주시면 더 정확하게 건강검진할 수 있어요.\n\n" + body
+
+
+def _question_for(field: str, target: str) -> str:
+    who = target or "사람"
+    qmap = {
+        "target": "이 아이디어를 가장 먼저 쓸 사람은 누구인가요? (예: 배달 라이더, 직장인)",
+        "context": "그 사람이 이게 필요해지는 순간은 언제인가요? (예: 콜 받을 때)",
+        "problem": "그때 가장 불편하거나 반복되는 문제는 무엇인가요?",
+        "behavior": "사용자가 직접 하길 기대하는 행동은 무엇인가요? (예: 바로 확인, 정리)",
+        "time": "검증에 쓸 수 있는 시간은 어느 정도인가요? (예: 오늘 30분, 오늘 또는 내일, 이번 주말)",
+        "testers": f"바로 물어볼 수 있는 {who}{_josa(who)} 몇 명 있나요? (예: 없음, 1명, 2명 이상)",
+        "alt": "지금은 이 일을 어떻게 하고 있나요? (예: 메모장, 카톡, 엑셀, 기억에 의존)",
+    }
+    return qmap[field]
 
 
 # --------------------------------------------------------------------------- #
@@ -456,47 +679,95 @@ def prepare_intake(
     raw = (idea_text or "").strip()
     text = _strip_intent_tail(raw)  # '만들고싶어 먼저 확인해줘' 등 의도 꼬리 제거
     answer = _strip_intent_tail((clarification_answer or "").strip())
+    has_clarified = bool(answer)
     combined = (text + " " + answer).strip()
     summary = (text[:140] + "…") if len(text) > 140 else (text or "(입력 없음)")
     service_type = _guess_service_type(text)
-    # target: 본문의 일반 주어(A가/이) 우선 → 역할 사전 → 답변 힌트(문장 통째로 넣지 않음).
-    #         본문에서 잡힌 target은 answer가 덮어쓰지 않는다(req4: 더 구체적인 기존 값 보존).
-    target_user = _subject_target(text) or _guess_target_user(text) or _target_from_answer(answer)
-    # 제약: 키워드 기반만(답변을 통째로 쪼개지 않음 — req5 방어). 중복 제거·순서 보존
+    labeled = _parse_labeled_answer(answer)  # '대상: …' 형식이면 우선 사용
+
+    # --- 확신 있는 필드만 채운다(억지 생성 금지) ---
+    # target: 본문 주어 → 역할 사전 → 문장 중간 주어 → 답변(라벨/힌트)
+    target_user = (_subject_target(text) or _guess_target_user(text) or _mid_subject(text)
+                   or labeled.get("target") or _target_from_answer(answer))
+    if labeled.get("target"):  # 라벨 정정이 있으면 우선
+        target_user = labeled["target"]
+    target_user = _trim_modifiers(target_user)  # '자꾸 까먹는 직장인' → '직장인'
+    target_conf = bool(target_user)
+
     constraints: list[str] = []
     for c in _constraints_from_text(combined):
         if c not in constraints:
             constraints.append(c)
-    # context: 답변의 절을 우선(있으면) → 없으면 본문. 주어만 떼고 원문 구절 보존(req4)
-    context = (_extract_context(answer, target_user) if answer else "") or _extract_context(text, target_user)
-    # behavior: 본문에서 자연스러운 행동 문장 합성 → 없으면 combined로 보강
-    behavior = _behavior_sentence(text, context, target_user) or _behavior_sentence(combined, context, target_user)
-    # problem: 패턴 기반 한 문장 합성(빈 값/원문통째/부사목적어 방지)
-    problem = _problem_sentence(text, context, target_user) or _problem_sentence(combined, context, target_user)
 
-    # 필수 확인 3필드: target_user / context_of_use / desired_behavior
-    missing = []
-    if not target_user:
-        missing.append("target_user")
-    if not context:
-        missing.append("context_of_use")
+    context = (labeled.get("context")
+               or (_extract_context(answer, target_user) if answer else "")
+               or _extract_context(text, target_user))
+
+    behavior = (labeled.get("behavior")
+                or _behavior_sentence(text, context, target_user)
+                or _behavior_sentence(combined, context, target_user))
+    behavior_conf = bool(behavior)
     if not behavior:
-        missing.append("desired_behavior")
-    # req3: 사용자가 이미 답(clarification_answer)을 줬다면 같은 라운드를 반복하지 않는다.
-    #       남은 빈 필드는 assumptions_if_continue로 메우고 다음 단계로 진행.
-    needs = bool(missing) and not answer
-    # 질문 수: 기본 최대 2개. 매우 부실(3개 모두 부족)이면 최대 3개. 4개 이상 없음.
-    cap = 3 if len(missing) == 3 else 2
-    questions = [_CLARIFY_Q[m] for m in missing][:cap] if needs else []
+        behavior = _FALLBACK_BEHAVIOR
 
-    # 3개 질문으로도 못 채울 정보는 가정으로 남긴다
+    problem = (labeled.get("problem")
+               or _problem_sentence(text, context, target_user)
+               or _problem_sentence(combined, context, target_user))
+    problem_conf = bool(problem)
+    if not problem:
+        problem = _FALLBACK_PROBLEM
+
+    # 시간/대상 수/대체 방법
+    tb = _coerce_budget(time_budget)
+    if tb == "UNKNOWN":
+        tb = _parse_time_budget(labeled.get("time") or answer)
+    reachable = labeled.get("testers") or _parse_testers(answer)
+    alternative = labeled.get("alt") or _parse_alternative(answer)
+
+    # --- 부족 필드 판정 + 1회 문진 제한 ---
+    missing = []
+    if not target_conf:
+        missing.append("target")
+    if not context:
+        missing.append("context")
+    if not problem_conf:
+        missing.append("problem")
+    if not behavior_conf:
+        missing.append("behavior")
+    if tb == "UNKNOWN":
+        missing.append("time")
+    if not reachable:
+        missing.append("testers")
+    # clarification은 최대 1회: 답변을 이미 받았으면 부족해도 false로 닫는다.
+    needs = bool(missing) and not has_clarified
+
+    # 2차(또는 진행): 기본값 fallback — 이상한 문장 대신 안전값
+    if not needs:
+        if tb == "UNKNOWN":
+            tb = "TWO_DAYS"  # 기본 '오늘 또는 내일'
+        if not reachable:
+            reachable = "1명 또는 2명"
+        if not alternative:
+            alternative = "현재 쓰는 방식은 직접 확인 필요"
+
+    # 1회 문진 UX 문구 (되묻을 때만)
+    understood = extracted = oneshot = fmt = ""
+    questions: list[str] = []
+    if needs:
+        core = [k for k in ("target", "context", "problem", "behavior") if k in missing]
+        ask = core + ["time", "testers", "alt"]  # 한 번에: 부족한 핵심 + 시간/대상/대체
+        understood = _build_understood(target_user, context, behavior if behavior_conf else "", summary)
+        extracted = _build_extracted_summary(
+            target_user, context, problem if problem_conf else "", behavior if behavior_conf else "")
+        oneshot = _build_oneshot(ask)
+        fmt = _build_format_hint(ask)
+        questions = [_question_for(k, target_user) for k in ask]
+
     gaps = []
-    if not target_user:
+    if not target_conf:
         gaps.append("대상 사용자는 가장 흔한 사용자층으로 가정한다")
     if not context:
         gaps.append("사용 순간은 반복적으로 생기는 일상 상황으로 가정한다")
-    if not behavior:
-        gaps.append("핵심 행동은 사용자가 직접 입력·기록하는 것으로 가정한다")
     assume_if_continue = (gaps + _default_assumptions(service_type, target_user))[:3]
 
     return IntakeData(
@@ -508,13 +779,20 @@ def prepare_intake(
         desired_behavior=behavior,
         pain_source=_guess_pain_source(combined),  # type: ignore[arg-type]
         maturity=_guess_maturity(combined),  # type: ignore[arg-type]
-        validation_time_budget=_coerce_budget(time_budget),  # type: ignore[arg-type]
+        validation_time_budget=tb,  # type: ignore[arg-type]
+        reachable_testers=reachable,
+        current_alternative=alternative,
+        has_clarified=has_clarified,
+        understood_summary=understood,
+        extracted_fields_summary=extracted,
+        one_shot_clarification_prompt=oneshot,
+        answer_format_hint=fmt,
         needs_clarification=needs,
         clarifying_question=(questions[0] if questions else None),
         clarification_questions=questions,
         can_continue_with_assumptions=True,
         assumptions_if_continue=assume_if_continue,
-        assumptions=[],  # 사용자가 확정한 것만(현재 없음)
+        assumptions=[],
         constraints=constraints[:5],
     )
 
@@ -614,6 +892,17 @@ def design(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
     actor = intake.target_user or "협조자"
     method = b["method"].format(a=actor)
     subject = b["subject"].format(a=actor)
+    # 바로 물어볼 수 있는 사람 수에 맞춰 미션 규모 조정(없으면 budget 기본 스케일 유지).
+    tcat = _tester_category(intake.reachable_testers)
+    if tcat == "NONE":
+        method = "오늘 직접 1회 써보거나, 관련 커뮤니티·오픈채팅에 짧게 의견 물어보기"
+        subject = "본인 경험 또는 온라인 반응 1건 이상에서"
+    elif tcat == "ONE":
+        method = f"바로 물어볼 수 있는 {actor} 1명에게 카톡으로 질문하거나 직접 1회 실험"
+        subject = f"그 {actor} 1명이"
+    elif tcat == "MANY":
+        method = f"바로 물어볼 수 있는 {actor} 2명에서 3명에게 카톡으로 질문"
+        subject = f"{actor} 2명에서 3명 중 1명 이상이"
     # WILLINGNESS + 기록·입력형 행동이면 구체적인 '기록 미션'을 쓴다(다른 focus는 기존 그대로).
     record = focus == "WILLINGNESS" and _is_record_behavior(
         intake.desired_behavior + " " + intake.input_summary
