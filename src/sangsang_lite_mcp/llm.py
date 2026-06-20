@@ -223,6 +223,31 @@ def _guess_target_user(text: str) -> str:
     return ""
 
 
+# 문장 맨 앞 주어구(A가/이) — 역할 사전에 없어도 target_user로 잡는다.
+_SUBJECT_RE = re.compile(r"^\s*([가-힣]{2,7}(?:\s[가-힣]{1,7})?)(?:가|이)\s")
+
+
+def _subject_target(text: str) -> str:
+    """'편의점 알바가 …', '동호회 운영자가 …'처럼 사전에 없는 주어도 추출."""
+    m = _SUBJECT_RE.match(text or "")
+    if m:
+        cand = m.group(1).strip()
+        if 2 <= len(cand) <= 14:
+            return cand
+    return ""
+
+
+def _strip_subject(text: str, target: str = "") -> str:
+    """문장 맨 앞의 주어(역할/일반 명사구)+조사를 일반적으로 떼어낸다."""
+    t = (text or "").strip()
+    if target and t.startswith(target):
+        return t[len(target):].lstrip(" 가이은는의에게을를")
+    m = _SUBJECT_RE.match(t)
+    if m:
+        return t[m.end():].strip()
+    return t
+
+
 def _target_from_answer(answer: str) -> str:
     """clarification_answer에서 대상 '힌트'만 추출(전체 문장을 통째로 넣지 않음 — req5).
 
@@ -253,32 +278,33 @@ def _extract_problem(text: str) -> str:
     return ""
 
 
-def _problem_sentence(text: str, context: str = "") -> str:
-    """문장 패턴으로 problem을 자연스러운 한 문장으로 합성(빈 값/원문통째 방지)."""
+def _problem_sentence(text: str, context: str = "", target: str = "") -> str:
+    """문장 패턴으로 problem을 자연스러운 한 문장으로 합성(빈 값/원문통째/부사목적어 방지)."""
+    t = _strip_subject(text, target)
     # 망각/리마인더: 'B 까먹지/잊지 않게' → 'B를 잊는 문제'
-    m = re.search(r"([가-힣 ]{2,20}?)\s*(?:까먹지\s*않게|까먹지\s*않도록|잊지\s*않게|잊지\s*않도록|놓치지\s*않게)", text)
+    m = re.search(r"([가-힣 ]{2,20}?)\s*(?:까먹지\s*않게|까먹지\s*않도록|잊지\s*않게|잊지\s*않도록|놓치지\s*않게)", t)
     if m:
-        b = _strip_lead_target(m.group(1))
+        b = _strip_subject(m.group(1))
         if b:
             return f"{b}{_josa(b, ('을', '를'))} 잊는 문제"
     # 낭비: 'B 버리기 전에/버리게' → 'B를 버리게 되는 문제'
-    m = re.search(r"([가-힣 ]{2,20}?)\s*버리(?:기|게|는)", text)
+    m = re.search(r"([가-힣 ]{2,20}?)\s*버리(?:기|게|는)", t)
     if m:
-        b = _strip_lead_target(m.group(1))
+        b = _strip_subject(m.group(1))
         if b:
             return f"{b}{_josa(b, ('을', '를'))} 버리게 되는 문제"
     # 기록 누락: '... 기록 남기는' → '... 기록을 남기지 못하거나 잊는 문제'
-    if "기록" in text:
-        m = re.search(r"([가-힣]{2,10})\s*(?:후|직후|뒤)?\s*기록", text)
+    if "기록" in t:
+        m = re.search(r"([가-힣]{2,10})\s*(?:후|직후|뒤)?\s*기록", t)
         if m:
             return f"{m.group(1)} 기록을 남기지 못하거나 잊는 문제"
-    # 정보 확인 어려움: '뜨는/표시/확인' → '맥락 + 대상 바로 확인 어려움'
-    m = re.search(r"([가-힣]{2,12})\s*(?:가|이|을|를)?\s*(?:뜨는|뜨게|팝업|표시|확인|조회|보는)", text)
-    if m:
-        obj = m.group(1)
-        ctx = (context + " ") if context else ""
-        return f"{ctx}{obj}{_josa(obj, ('을', '를'))} 바로 확인하기 어려운 문제".strip()
-    return _extract_problem(text)
+    # 일반 동사형: object + (즉시성) + '확인/찾기 어려운 문제'
+    obj, verb, adverb = _object_before(t)
+    if obj:
+        pv = "찾기" if verb == "찾" else "확인하기"
+        speed = "바로 " if (adverb or verb in ("표시", "뜨는", "뜨게", "팝업")) else ""
+        return f"{obj}{_josa(obj, ('을', '를'))} {speed}{pv} 어려운 문제"
+    return _extract_problem(t)
 
 
 def _constraints_from_text(text: str) -> list[str]:
@@ -313,12 +339,8 @@ def _default_assumptions(service_type: str, target_user: str) -> list[str]:
     ]
 
 
-# 맥락 절의 끝(연결어미). 긴 표현을 먼저 둬 과도하게 짧게 잘리는 것 방지.
-_CTX_TAIL = (
-    r"(?:다가올\s*때|임박(?:할|했을)\s*때|마친\s*직후|났을\s*때|잊었을\s*때|받았을\s*때"
-    r"|받을\s*때|볼\s*때|쓸\s*때|할\s*때|일\s*때|올\s*때|직후|직전|난\s*뒤|난\s*후"
-    r"|끝나고|전에|도중|중에|순간|상황)"
-)
+# 맥락 절의 끝(연결어미). '때'는 일반화('넣을 때','필요할 때' 등 모두 포함).
+_CTX_TAIL = r"(?:때|순간|상황|마친\s*직후|직후|직전|전에|끝나고|도중|중에)"
 _CTX_RE = re.compile(r"(.{2,40}?" + _CTX_TAIL + r")")
 
 
@@ -337,25 +359,62 @@ def _norm_spacing(s: str) -> str:
 
 
 def _extract_context(text: str, target: str = "") -> str:
-    """사용 순간/상황 절을 원문 구절 그대로 추출. 대상 주어만 떼고 첫 글자·조사는 보존."""
-    body = _strip_lead_target(text, target) if target and text.strip().startswith(target) else text
+    """사용 순간/상황 절을 원문 구절 그대로 추출. '대상(target)'이 맨 앞일 때만 떼고
+    그 외 주어(맥락 일부인 '모두가' 등)는 보존한다."""
+    body = text.strip()
+    if target and body.startswith(target):
+        body = body[len(target):].lstrip(" 가이은는의에게을를")
     m = _CTX_RE.search(body)
     if not m:
         return ""
-    ctx = _strip_lead_target(m.group(1).strip(" ,."), target)
+    ctx = m.group(1).strip(" ,.")
+    if target and ctx.startswith(target):
+        ctx = ctx[len(target):].lstrip(" 가이은는의에게을를")
     return _norm_spacing(ctx)[:60]
 
 
-def _behavior_sentence(text: str, context: str = "") -> str:
-    """핵심 행동을 자연스러운 한 문장으로 합성(토막/명사 단독 금지). 룰 기반·결정적."""
-    t = text
+# 일반 동사·부사·동사구 매핑 (object 추출과 자연스러운 문장 합성에 공용)
+_ADVERBS = ("빨리", "빠르게", "바로", "즉시", "금방", "얼른", "간단히", "쉽게", "한번에", "한 번에", "미리", "자동으로", "직접", "잘")
+_SPEED_NORM = {"빨리": "빠르게", "빠르게": "빠르게", "바로": "바로", "즉시": "즉시", "금방": "바로", "얼른": "바로"}
+_VERB_RE = re.compile(r"(확인|조회|체크|찾|보는|본다|보기|표시|뜨는|뜨게|팝업|추천|입력|기록|정리|관리|계산|비교)")
+_BEH_VERB = {
+    "확인": "확인한다", "조회": "확인한다", "체크": "확인한다", "보는": "확인한다", "본다": "확인한다",
+    "보기": "확인한다", "표시": "확인한다", "찾": "찾는다", "추천": "추천받는다", "입력": "입력한다",
+    "기록": "기록을 남긴다", "정리": "정리한다", "관리": "정리한다", "계산": "계산한다", "비교": "비교한다",
+}
+
+
+def _object_before(action_text: str) -> tuple[str, str, str]:
+    """동사 앞의 목적어 명사구를 추출. 맥락절·부사·조사를 벗겨내 (object, verb, adverb) 반환."""
+    s = re.sub(r"\s*(?:" + _SERVICE_NOUN + r")\s*$", "", (action_text or "").strip()).strip()
+    m = _VERB_RE.search(s)
+    if not m:
+        return "", "", ""
+    verb = m.group(1)
+    before = re.split(_CTX_TAIL, s[:m.start()])[-1].strip()  # 맥락절 뒤 부분만
+    adverb = ""
+    am = re.search(r"(" + "|".join(_ADVERBS) + r")\s*$", before)
+    if am:
+        adverb = am.group(1)
+        before = before[:am.start()].strip()
+    obj = re.sub(r"\s*(?:을|를)\s*$", "", before).strip()  # 목적격 조사 제거
+    return obj, verb, adverb
+
+
+# 행동 동사(서비스 명사 아님)
+_SERVICE_NOUN = r"(?:앱|어플|애플리케이션|도구|서비스|웹|사이트|시스템|플랫폼|프로그램)"
+
+
+def _behavior_sentence(text: str, context: str = "", target: str = "") -> str:
+    """핵심 행동을 자연스러운 한 문장으로 합성(토막/부사 단독 금지). 룰 기반·결정적."""
+    t = _strip_subject(text, target)
     # 알림/리마인더 → '... 전에 알림을 받는다'
     if re.search(r"알림|알람|리마인|푸시|알려", t):
         m = re.search(r"([가-힣 ]{2,20}?)\s*(?:까먹지\s*않게|까먹지\s*않도록|잊지\s*않게|잊지\s*않도록|놓치지\s*않게|전에)", t)
-        thing = _strip_lead_target(m.group(1)) if m else ""
+        thing = _strip_subject(m.group(1)) if m else ""
         return f"{thing or '필요한 순간'} 전에 알림을 받는다"
     # 뜨다/팝업/표시 → '{대상}가 뜨거나 바로 확인된다'
-    m = re.search(r"([가-힣]{2,12})\s*(?:가|이|을|를)?\s*(?:뜨는|뜨게|뜬다|팝업|표시|띄우)", t)
+    m = re.search(r"([가-힣]{2,12})\s*(?:가|이|을|를)?\s*(?:뜨는|뜨게|뜬다|팝업|띄우)", t)
     if m or "팝업" in t:
         obj = m.group(1) if m else "필요한 정보"
         return f"{obj}{_josa(obj)} 뜨거나 바로 확인된다"
@@ -371,19 +430,12 @@ def _behavior_sentence(text: str, context: str = "") -> str:
         m = re.search(r"([가-힣]{2,10}(?:\s*(?:후|직후|뒤))?)\s*기록", t)
         act = m.group(1).strip() if m else (context or "활동")
         return f"{act} 기록을 남긴다"
-    # 입력
-    if "입력" in t:
-        return "필요한 정보를 직접 입력한다"
-    # 확인/조회/보기 → '{대상}를 바로 확인한다'
-    m = re.search(r"([가-힣]{2,12})\s*(?:을|를)?\s*(?:확인|조회|체크|보는|본다)", t)
-    if m:
-        obj = m.group(1)
-        return f"{obj}{_josa(obj, ('을', '를'))} 바로 확인한다"
-    # 정리/정렬/관리 → '{대상}를 정리한다'
-    m = re.search(r"([가-힣]{2,12})\s*(?:을|를)?\s*(?:정리|정렬|관리)", t)
-    if m:
-        obj = m.group(1)
-        return f"{obj}{_josa(obj, ('을', '를'))} 정리한다"
+    # 일반 동사(확인/찾기/보기/정리 등) → object + (속도부사) + 동사
+    obj, verb, adverb = _object_before(t)
+    if obj:
+        obj = re.sub(r"^(자신의|내|나의|본인의|제)\s*", "", obj).strip()  # 소유격은 행동에서 생략
+        speed = (_SPEED_NORM.get(adverb, "") + " ") if adverb else ""
+        return f"{obj}{_josa(obj, ('을', '를'))} {speed}{_BEH_VERB.get(verb, '확인한다')}"
     return ""
 
 
@@ -407,19 +459,20 @@ def prepare_intake(
     combined = (text + " " + answer).strip()
     summary = (text[:140] + "…") if len(text) > 140 else (text or "(입력 없음)")
     service_type = _guess_service_type(text)
-    # target: 아이디어 본문의 역할 우선 → 없으면 답변의 대상 힌트(문장 통째로 넣지 않음)
-    target_user = _guess_target_user(text) or _target_from_answer(answer)
+    # target: 본문의 일반 주어(A가/이) 우선 → 역할 사전 → 답변 힌트(문장 통째로 넣지 않음).
+    #         본문에서 잡힌 target은 answer가 덮어쓰지 않는다(req4: 더 구체적인 기존 값 보존).
+    target_user = _subject_target(text) or _guess_target_user(text) or _target_from_answer(answer)
     # 제약: 키워드 기반만(답변을 통째로 쪼개지 않음 — req5 방어). 중복 제거·순서 보존
     constraints: list[str] = []
     for c in _constraints_from_text(combined):
         if c not in constraints:
             constraints.append(c)
-    # context: 답변의 절을 우선(있으면) → 없으면 본문. 대상 주어만 떼고 원문 구절 보존(req4)
+    # context: 답변의 절을 우선(있으면) → 없으면 본문. 주어만 떼고 원문 구절 보존(req4)
     context = (_extract_context(answer, target_user) if answer else "") or _extract_context(text, target_user)
     # behavior: 본문에서 자연스러운 행동 문장 합성 → 없으면 combined로 보강
-    behavior = _behavior_sentence(text, context) or _behavior_sentence(combined, context)
-    # problem: 패턴 기반 한 문장 합성(빈 값/원문통째 방지)
-    problem = _problem_sentence(combined, context)
+    behavior = _behavior_sentence(text, context, target_user) or _behavior_sentence(combined, context, target_user)
+    # problem: 패턴 기반 한 문장 합성(빈 값/원문통째/부사목적어 방지)
+    problem = _problem_sentence(text, context, target_user) or _problem_sentence(combined, context, target_user)
 
     # 필수 확인 3필드: target_user / context_of_use / desired_behavior
     missing = []
