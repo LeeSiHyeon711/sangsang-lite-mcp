@@ -206,7 +206,7 @@ def _default_assumptions(service_type: str, target_user: str) -> list[str]:
     u = target_user or "대상 사용자"
     st = service_type if service_type != "기타" else "이 방식"
     return [
-        f"{u}가 {st}을(를) 실제로 사용할 의향이 있다",
+        f"{u}{_josa(u)} {st}{_josa(st, ('을', '를'))} 실제로 사용할 의향이 있다",
         f"{u}의 그 문제가 반복적으로 발생한다",
         f"{st} 형태가 그 문제 해결에 적합하다",
     ]

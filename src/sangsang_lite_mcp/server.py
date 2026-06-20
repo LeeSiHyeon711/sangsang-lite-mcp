@@ -26,6 +26,10 @@ _INSTRUCTIONS = """\
 
 권장 호출 순서: prepare_intake → (필요 시 질문/답변 반영해 prepare_intake 재호출) → diagnose_idea → design_first_experiment.
 도구는 빠르게 '검증 미션 재료'를 반환한다. 최종 자연어 카드는 AI채팅이 다듬어 사용자에게 보여준다.
+
+결과카드를 보여줄 때는 design_first_experiment의 readiness(검증 준비도 점수)도 함께 표시한다:
+"검증 준비도 N/100" + 4개 항목(대상 사용자 명확도·문제·불편 강도·사용 상황 구체성·48시간 검증 가능성) + 한 줄 평.
+이 점수는 '아이디어 성공 가능성'이 아니라 '검증 가능한 형태로 얼마나 정리됐는가'다(단정 표현 금지).
 """
 
 
