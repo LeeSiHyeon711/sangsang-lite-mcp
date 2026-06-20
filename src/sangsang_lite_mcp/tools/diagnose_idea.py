@@ -21,9 +21,5 @@ def register(mcp: FastMCP) -> None:
         ),
     )
     def diagnose_idea(intake: IntakeData) -> Diagnosis:
-        """접수 데이터를 받아 가장 먼저 깨질 전제(균열점) 1개를 진단한다.
-
-        Args:
-            intake: prepare_intake가 만든 접수 데이터 (stateless 입력 체이닝).
-        """
+        """접수된 아이디어에서 가장 먼저 깨질 수 있는 위험 가설, 즉 균열점 1개를 진단합니다. 사용자가 바로 개발하기 전에 무엇을 먼저 확인해야 하는지 판단하는 단계입니다."""
         return _diagnose(intake)

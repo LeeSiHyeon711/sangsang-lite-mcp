@@ -21,14 +21,5 @@ def register(mcp: FastMCP) -> None:
         ),
     )
     def design_first_experiment(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
-        """균열점을 사용자의 시간 예산 안에서 확인할 가장 작은 검증 미션을 설계한다.
-
-        상상공방 Lite 원칙: 결과는 컨설팅 보고서가 아니라 '오늘 할 수 있는 가장 작은 검증 행동'.
-        시간 예산이 TWO_DAYS 이하면 혼자 또는 1~3명 협조자로 48시간 안에 실제 수행 가능한 수준으로만 설계하고,
-        5명 이상 모집·장시간 인터뷰·복잡한 템플릿·정식 프로토타입 개발은 피한다.
-
-        Args:
-            intake: prepare_intake 결과 (시간 예산 포함).
-            diagnosis: diagnose_idea 결과 (균열점). stateless 입력 체이닝.
-        """
+        """진단된 균열점을 바탕으로 시간 예산 안에서 실행 가능한 첫 검증 미션을 설계합니다. 결과는 컨설팅 보고서가 아니라 오늘 또는 48시간 안에 해볼 수 있는 작은 행동, 성공 기준, 실패 신호, 아직 만들지 말아야 할 것으로 정리합니다."""
         return _design(intake, diagnosis)
