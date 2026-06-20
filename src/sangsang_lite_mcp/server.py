@@ -29,6 +29,11 @@ _INSTRUCTIONS = """\
 권장 호출 순서: prepare_intake → (필요 시 질문/답변 반영해 prepare_intake 재호출) → diagnose_idea → design_first_experiment.
 도구는 빠르게 '검증 미션 재료'를 반환한다. 최종 자연어 카드는 AI채팅이 다듬어 사용자에게 보여준다.
 
+문진(clarification) 규칙:
+- prepare_intake가 needs_clarification=true면, 질문을 새로 만들지 말고 **one_shot_clarification_prompt를 그대로** 사용자에게 보여준다(이해 요약 + 추출 필드 확인 + 부족 정보 요청이 한 메시지로 들어 있다).
+- 되묻기는 **1회만** 한다. 사용자가 답하면 그 답을 clarification_answer로 넘겨 prepare_intake를 한 번 더 호출한다(has_clarified=true가 되며 부족분은 기본값으로 채워진다).
+- 두 번째 prepare_intake 이후에는 부족해도 다시 묻지 말고 diagnose_idea로 진행한다.
+
 """
 
 

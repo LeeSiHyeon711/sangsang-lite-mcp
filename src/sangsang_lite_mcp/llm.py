@@ -646,9 +646,17 @@ def _build_extracted_summary(target: str, context: str, problem: str, behavior: 
     return "\n".join(lines)
 
 
-def _build_oneshot(ask: list[str]) -> str:
-    body = "\n".join(f"{_FIELD_KO[k]}: {_FIELD_EG[k]}" for k in ask)
-    return "맞다면 아래 정보만 추가로 알려주세요. 일부는 비워도 기본값으로 진행할게요.\n\n" + body
+def _compose_oneshot(understood: str, extracted: str, ask: list[str]) -> str:
+    """카카오AI가 사용자에게 그대로 보여줄 완성 문진 메시지.
+    1) 이해 요약 → 2) 추출 필드 확인 → 3) 부족한 정보 1회 요청(순서 고정)."""
+    parts: list[str] = []
+    if understood:
+        parts.append(understood)
+    if extracted and "- " in extracted:  # 확신 있는 핵심 필드가 있을 때만
+        parts.append(extracted)
+    ask_lines = "\n".join(f"- {_FIELD_KO[k]}: {_FIELD_EG[k]}" for k in ask)
+    parts.append("맞다면 아래 정보만 추가로 알려주세요. 비워두면 기본값으로 진행할게요.\n" + ask_lines)
+    return "\n\n".join(parts)
 
 
 def _build_format_hint(ask: list[str]) -> str:
@@ -759,7 +767,8 @@ def prepare_intake(
         understood = _build_understood(target_user, context, behavior if behavior_conf else "", summary)
         extracted = _build_extracted_summary(
             target_user, context, problem if problem_conf else "", behavior if behavior_conf else "")
-        oneshot = _build_oneshot(ask)
+        # one_shot에 understood + extracted + 요청을 모두 담은 완성 메시지
+        oneshot = _compose_oneshot(understood, extracted, ask)
         fmt = _build_format_hint(ask)
         questions = [_question_for(k, target_user) for k in ask]
 
