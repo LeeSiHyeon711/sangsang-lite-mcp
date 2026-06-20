@@ -499,6 +499,55 @@ def diagnose(intake: IntakeData) -> Diagnosis:
     )
 
 
+# WILLINGNESS 안에서도 '기록·입력형' 행동이면 더 구체적인 기록 미션을 쓴다(다른 focus는 불변).
+_RECORD_HINTS = ("기록", "입력", "남긴다", "남기", "일지", "로그", "적는", "적어", "체크")
+
+
+def _is_record_behavior(text: str) -> bool:
+    return any(k in text for k in _RECORD_HINTS)
+
+
+def _record_mission(intake: IntakeData, b: dict, subject: str) -> tuple[list[str], str, list[str]]:
+    """기록형 WILLINGNESS 전용 미션. 활동·순간·기록 항목을 맥락에서 구체화."""
+    blob = " ".join((intake.desired_behavior, intake.context_of_use, intake.input_summary))
+    m = re.search(r"([가-힣]{2,8})\s*(?:후|직후|뒤)?\s*기록", blob) or re.search(r"([가-힣]{2,8})\s*(?:후|직후|뒤)", blob)
+    activity = m.group(1) if m else ""
+    moment = intake.context_of_use.strip()
+    if not re.search(r"(직후|후|끝나고|뒤|때)$", moment):
+        moment = f"{activity or '그 일'} 직후"
+    # 활동별 기록 항목(운동/식사/지출은 구체, 그 외 일반)
+    if "운동" in blob:
+        activity, items = "운동", "운동명·무게·횟수"
+        item_ex = "운동명, 무게, 횟수 중 가능한 것만 적는다"
+        if not re.search(r"(직후|후|끝나고|뒤)", moment):
+            moment = "운동 직후"
+    elif any(k in blob for k in ("식단", "식사", "먹은", "음식")):
+        activity, items = (activity or "식사"), "메뉴·양·시간"
+        item_ex = "메뉴, 양, 시간 중 가능한 것만 적는다"
+    elif any(k in blob for k in ("지출", "가계", "소비")):
+        activity, items = (activity or "지출"), "금액·항목·시간"
+        item_ex = "금액, 항목, 시간 중 가능한 것만 적는다"
+    else:
+        activity, items = (activity or "활동"), ""
+        item_ex = "핵심 항목 2가지에서 3가지 중 가능한 것만 적는다"
+    steps = [
+        f"{moment} 1분 안에 오늘 한 {activity} 핵심을 메모장이나 카톡 '나에게 보내기'로 짧게 기록해본다",
+        f"기록 항목 예: {item_ex}",
+        "끝나고 다음에도 같은 방식으로 남길 수 있을지 한 줄로 확인받기",
+    ]
+    quota = f"{items} 중 2가지 이상" if items else "핵심 항목 2가지 이상"
+    success = (
+        f"{b['hours']} 안에 {subject} {moment} 5분 안에 {quota}{_josa(quota, ('을', '를'))} 기록하고, "
+        f"다음 {activity} 때도 같은 방식으로 남길 수 있겠다고 말하면 통과"
+    )
+    failure = [
+        f"{activity}{_josa(activity)} 끝난 뒤 기록을 미루거나 잊어버리면 보류",
+        "기록할 항목이 많아 귀찮다고 느끼면 보류",
+        f"다음 {activity} 때 다시 할 생각이 없다고 하면 보류",
+    ]
+    return steps, success, failure
+
+
 # --------------------------------------------------------------------------- #
 # 3) design_first_experiment — (focus, time_budget, service_type) 기반 미션 템플릿
 # --------------------------------------------------------------------------- #
@@ -512,14 +561,21 @@ def design(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
     actor = intake.target_user or "협조자"
     method = b["method"].format(a=actor)
     subject = b["subject"].format(a=actor)
-    # step1(접촉 방법)·기간은 시간 예산이, 무엇을 확인하는지(act/success/failure)는 포커스가 정한다.
-    steps = [
-        method,
-        f"{b['hours']} 동안 {f['act']} 기록",
-        "끝나고 한 줄 피드백(긍정/부정 표현) 받기",
-    ]
-    success = f"{b['hours']} 안에 {subject} {f['success']}"
-    failure = list(f["failure"])
+    # WILLINGNESS + 기록·입력형 행동이면 구체적인 '기록 미션'을 쓴다(다른 focus는 기존 그대로).
+    record = focus == "WILLINGNESS" and _is_record_behavior(
+        intake.desired_behavior + " " + intake.input_summary
+    )
+    if record:
+        steps, success, failure = _record_mission(intake, b, subject)
+    else:
+        # step1(접촉)·기간은 시간 예산이, 무엇을 확인하는지(act/success/failure)는 포커스가 정한다.
+        steps = [
+            method,
+            f"{b['hours']} 동안 {f['act']} 기록",
+            "끝나고 한 줄 피드백(긍정/부정 표현) 받기",
+        ]
+        success = f"{b['hours']} 안에 {subject} {f['success']}"
+        failure = list(f["failure"])
 
     # 지금 만들지 말 것: service_type 기본 + constraints에서 제외/연동 언급 반영
     dnb = list(_SERVICE_DNB.get(intake.service_type, _SERVICE_DNB["기타"]))
@@ -537,7 +593,7 @@ def design(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
             f"{b['hours']} 안에 가장 싸게 검증하려고 일부러 작게 줄인 미션이다."
         ),
         success_criteria=[success],
-        failure_signals=failure[:2],
+        failure_signals=failure[:3] if record else failure[:2],
         do_not_build_yet=dnb[:3],
         next_step_if_passed="통과해도 바로 개발하지 말고, 더 작은 다음 미션 또는 화면 없는 수동/노코드 프로토타입으로",
     )
