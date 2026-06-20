@@ -1,375 +1,204 @@
-"""LLM 호출 껍데기 + 규칙기반 stub fallback.
+"""검증 미션 '재료' 생성 — 룰/템플릿 기반 (등록용: 서버 내부 LLM 호출 없음).
 
-설계 원칙(이번 단계 범위):
-  - tool은 `prepare_intake` / `diagnose` / `design`만 호출한다(시그니처 불변).
-  - 이 함수들이 내부에서 LLM↔stub을 분기한다. tool은 Anthropic SDK를 직접 부르지 않는다.
-  - API 키 없음 / LLM_ENABLED off / 호출·파싱 오류 / 타임아웃 → **stub fallback** (tool call은 항상 성공).
-  - `anthropic` import는 call_anthropic 내부로 지연 → 키/패키지 없어도 모듈 로드·stub 동작 보장.
+설계 원칙(PlayMCP 가이드: 평균 100ms·p99 3000ms 필수):
+  - MCP 도구는 **빠르고 결정적인** 변환기. 자연어 품질은 PlayMCP AI채팅 본체가 담당한다.
+  - 서버는 diagnosis_focus / time_budget / service_type / constraints 기반으로
+    구조화된 '검증 미션 재료'(균열점·미션·성공/실패 기준·만들지 말 것)를 룰·템플릿으로 반환한다.
+  - LLM/anthropic 호출 없음 → 지연은 사실상 전송 오버헤드(~ms)뿐.
 
-환경변수:
-  ANTHROPIC_API_KEY     없으면 stub
-  LLM_ENABLED           true/1/yes 만 활성 (그 외 stub)
-  MODEL_NAME            없으면 가벼운 Claude 기본값
-  LLM_TIMEOUT_SECONDS   없으면 2.5초
+상상공방 Lite 철학은 유지: 균열점 1개, TWO_DAYS 이하는 즉시 가능한 최소 행동,
+성공/실패 기준은 숫자·행동·시간 포함, do_not_build_yet 유지, "만들기 전 먼저 확인".
 """
 
 from __future__ import annotations
 
-import json
-import os
+import re
 
-from .schemas import Diagnosis, FirstExperiment, IntakeData, TimeBudget, ToolMeta
-
-DEFAULT_MODEL = "claude-haiku-4-5"  # 가벼운 기본값 (MODEL_NAME 으로 override). 구버전 3-5-haiku-latest는 EOL 404.
-DEFAULT_TIMEOUT_SECONDS = 2.5
+from .schemas import Diagnosis, FirstExperiment, IntakeData
 
 _VALID_BUDGETS = {"30_MIN", "TODAY", "TWO_DAYS", "ONE_WEEK", "TWO_WEEKS_PLUS", "UNKNOWN"}
-# TWO_DAYS 이하 = 48시간 안에 즉시 수행 가능한 경량 실험만 (상상공방 Lite 철학)
-_LIGHT_BUDGETS = {"30_MIN", "TODAY", "TWO_DAYS"}
+_LIGHT_BUDGETS = {"30_MIN", "TODAY", "TWO_DAYS", "UNKNOWN"}
 
 _BUDGET_LABEL = {
-    "30_MIN": "30분 이내",
-    "TODAY": "오늘 안에",
-    "TWO_DAYS": "2일 이내",
-    "ONE_WEEK": "1주일 이내",
-    "TWO_WEEKS_PLUS": "2주 이상",
-    "UNKNOWN": "미정",
+    "30_MIN": "30분 이내", "TODAY": "오늘 안에", "TWO_DAYS": "2일 이내",
+    "ONE_WEEK": "1주일 이내", "TWO_WEEKS_PLUS": "2주 이상", "UNKNOWN": "미정",
 }
+
+# 시간 예산별 실험 규모 (숫자·행동·시간 — 성공/실패 기준에 그대로 들어감)
+_BUDGET = {
+    "30_MIN":        {"method": "본인 자가 점검 또는 아는 1명에게 카톡으로 질문", "who": "본인이", "n": "1회 이상", "hours": "30분", "scale": "light"},
+    "TODAY":         {"method": "아는 1~2명에게 카톡/DM으로 짧게 질문", "who": "물어본 1~2명 중 1명 이상이", "n": "2회 이상", "hours": "오늘 안(몇 시간)에", "scale": "light"},
+    "TWO_DAYS":      {"method": "아는 1~3명에게 카톡·구글시트·종이 메모로 직접 기록 요청", "who": "협조자 3명 중 2명 이상이", "n": "3회 이상", "hours": "48시간", "scale": "light"},
+    "ONE_WEEK":      {"method": "협조자 3~5명에게 1주간 작은 파일럿 운영", "who": "참여자 3~5명 중 절반 이상이", "n": "주 3회 이상", "hours": "1주일", "scale": "heavy"},
+    "TWO_WEEKS_PLUS":{"method": "노코드/수동 운영 파일럿(협조자 5명+)", "who": "참여자 5명 중 3명 이상이", "n": "반복적으로", "hours": "2주", "scale": "heavy"},
+    "UNKNOWN":       {"method": "아는 1~2명에게 카톡으로 질문(가장 가볍게)", "who": "물어본 1~2명 중 1명 이상이", "n": "2회 이상", "hours": "오늘~내일", "scale": "light"},
+}
+
+# 진단 포커스별 — 균열점·확인 행동(verb 어간)·통과/실패 표현. act는 "{n} {act}하고"에 들어간다.
+_FOCUS = {
+    "WILLINGNESS":       {"crack": "{u}가 그 행동(입력·관리 등)을 지속할 동기·의지가 충분한가", "act": "자발적으로 직접 실행", "yes": "계속 쓸 것 같다/도움 된다", "no": "번거롭다/필요 없다"},
+    "PROBLEM_EXISTENCE": {"crack": "그 문제를 실제로 겪는 {u}가 존재하는가", "act": "겪는 상황을 구체적으로 언급", "yes": "맞아, 나도 그래서 불편하다", "no": "그건 별 문제 아니다"},
+    "PAIN_INTENSITY":    {"crack": "그 불편이 {u}의 행동을 바꿀 만큼 강한가", "act": "그 불편을 강하게 호소", "yes": "자주 겪어서 짜증난다", "no": "가끔 있지만 참을 만하다"},
+    "SOLUTION_FIT":      {"crack": "제안한 방식이 {u}의 문제에 실제로 맞는가", "act": "그 방식이 자기 상황에 맞다고 확인", "yes": "이런 방식이면 쓰겠다", "no": "이 방식은 내 상황엔 안 맞다"},
+    "FEASIBILITY":       {"crack": "이 방식이 {u}의 환경에서 실제로 작동·실행 가능한가", "act": "실제 환경에서 시도", "yes": "되네, 쓸 만하다", "no": "환경 때문에 안 된다"},
+    "CONTEXT_OF_USE":    {"crack": "{u}의 실제 사용 순간과 첫 사용자가 구체적으로 성립하는가", "act": "쓸 순간을 구체적으로 지목", "yes": "이럴 때(구체 상황) 쓰겠다", "no": "딱히 쓸 순간이 안 떠오른다"},
+    "OPERATION_FIT":     {"crack": "{u}가 이 방식을 지속적으로 운영·유지할 수 있는가", "act": "끊기지 않고 반복 수행", "yes": "계속 유지할 수 있겠다", "no": "며칠 만에 흐지부지된다"},
+    "PROBLEM_CAUSE_FIT": {"crack": "이 해결책이 진짜 원인을 겨냥하는가", "act": "진짜 원인을 짚어 말", "yes": "그게 진짜 원인 맞다", "no": "원인은 다른 데 있다"},
+}
+_DEFAULT_FOCUS = "WILLINGNESS"
 
 _FOCUS_BY_SOURCE = {
-    "SELF": "SOLUTION_FIT",
-    "OBSERVED": "PAIN_INTENSITY",
-    "ASSUMED": "PROBLEM_EXISTENCE",
-    "IMAGINED": "CONTEXT_OF_USE",
+    "SELF": "SOLUTION_FIT", "OBSERVED": "PAIN_INTENSITY",
+    "ASSUMED": "PROBLEM_EXISTENCE", "IMAGINED": "CONTEXT_OF_USE",
 }
 
-_CRACK_BY_SOURCE = {
-    "SELF": "문제 존재가 아니라 '이 해결 방식이 빈도·강도에 맞는지'가 먼저 확인할 지점이다.",
-    "OBSERVED": "관찰자의 해석과 당사자의 실제 불편이 일치하는지가 먼저 확인할 지점이다.",
-    "ASSUMED": "그 문제를 실제로 겪는 사람이 존재하는지가 먼저 확인할 지점이다.",
-    "IMAGINED": "사용 순간과 첫 사용자가 구체적으로 성립하는지가 먼저 확인할 지점이다.",
+# service_type별 '지금 만들지 말 것'
+_SERVICE_DNB = {
+    "앱": ["앱·백엔드 개발", "정식 UI·디자인"],
+    "웹": ["서버·DB·로그인", "정식 디자인"],
+    "자동화 도구": ["완전 자동화 구축", "외부 시스템 연동"],
+    "업무 개선 도구": ["전용 도구 개발", "정식 시스템화"],
+    "기타": ["본격 개발·서버", "정식 디자인"],
 }
 
 
 # --------------------------------------------------------------------------- #
-# LLM 활성 판정 / 호출
+# 공통 헬퍼 (룰 기반)
 # --------------------------------------------------------------------------- #
-class LLMTimeout(Exception):
-    """LLM 호출 타임아웃."""
-
-
-class LLMError(Exception):
-    """LLM 호출/파싱 일반 오류."""
-
-
-def _llm_flag_on() -> bool:
-    return os.environ.get("LLM_ENABLED", "").strip().lower() in {"true", "1", "yes"}
-
-
-def _model_name() -> str:
-    return os.environ.get("MODEL_NAME", "").strip() or DEFAULT_MODEL
-
-
-def _timeout_seconds() -> float:
-    raw = os.environ.get("LLM_TIMEOUT_SECONDS", "").strip()
-    try:
-        return float(raw) if raw else DEFAULT_TIMEOUT_SECONDS
-    except ValueError:
-        return DEFAULT_TIMEOUT_SECONDS
-
-
-def _block_reason() -> str | None:
-    """LLM을 못 쓰는 사유. None이면 사용 가능."""
-    if not _llm_flag_on():
-        return "disabled"
-    if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
-        return "missing_api_key"
-    return None
-
-
-def is_llm_enabled() -> bool:
-    return _block_reason() is None
-
-
-def call_anthropic(prompt: str, *, max_tokens: int = 800, prefill: str | None = None) -> str:
-    """Anthropic 호출(지연 import). 오류는 LLMTimeout/LLMError로 정규화해 던진다.
-
-    prefill: assistant 응답을 이 문자열로 시작하도록 강제(예: '{' → JSON만 출력 보장).
-    """
-    try:
-        import anthropic  # 지연 import — 키/패키지 없어도 모듈 로드 안 깨지게
-    except Exception as exc:  # noqa: BLE001
-        raise LLMError(f"anthropic import 실패: {exc}") from exc
-
-    messages = [{"role": "user", "content": prompt}]
-    if prefill:
-        messages.append({"role": "assistant", "content": prefill})
-
-    # max_retries=0: 재시도로 타임아웃이 누적(5s×3≈15s)되는 것을 막아 지연 상한을 timeout으로 고정
-    client = anthropic.Anthropic(timeout=_timeout_seconds(), max_retries=0)  # api_key는 env에서 자동
-    try:
-        msg = client.messages.create(
-            model=_model_name(),
-            max_tokens=max_tokens,
-            messages=messages,
-        )
-    except Exception as exc:  # noqa: BLE001
-        name = type(exc).__name__.lower()
-        if "timeout" in name:
-            raise LLMTimeout(str(exc)) from exc
-        raise LLMError(str(exc)) from exc
-
-    parts = [getattr(b, "text", "") for b in msg.content if getattr(b, "type", None) == "text"]
-    text = "\n".join(p for p in parts if p).strip()
-    if not text:
-        raise LLMError("빈 응답")
-    return (prefill + text) if prefill else text  # 프리필 사용 시 시작 토큰 복원
-
-
-def _parse_json(text: str) -> dict:
-    """LLM 응답에서 JSON 1개를 추출. 실패 시 LLMError."""
-    t = text.strip()
-    if t.startswith("```"):
-        t = t.strip("`")
-        if t[:4].lower() == "json":
-            t = t[4:]
-    start, end = t.find("{"), t.rfind("}")
-    if start == -1 or end == -1:
-        raise LLMError("응답에서 JSON을 찾지 못함")
-    try:
-        return json.loads(t[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise LLMError(f"JSON 파싱 실패: {exc}") from exc
-
-
-# --------------------------------------------------------------------------- #
-# 공통 헬퍼
-# --------------------------------------------------------------------------- #
-def _guess_service_type(text: str) -> str:
-    lowered = text.lower()
-    if "앱" in text or "app" in lowered:
-        return "앱"
-    if "웹" in text or "web" in lowered or "사이트" in text:
-        return "웹"
-    if "자동화" in text or "automat" in lowered:
-        return "자동화 도구"
-    return "기타"
-
-
 def _coerce_budget(value: str | None) -> str:
     return value if value in _VALID_BUDGETS else "UNKNOWN"
 
 
-# --------------------------------------------------------------------------- #
-# STUB (규칙기반, 결정적) — fallback의 기준
-# --------------------------------------------------------------------------- #
-def _prepare_intake_stub(
-    idea_text: str, time_budget: str, clarification_answer: str | None = None
-) -> IntakeData:
-    text = (idea_text or "").strip()
-    summary = (text[:120] + "…") if len(text) > 120 else (text or "(입력 없음)")
-    pain_source = "SELF" if ("내가" in text or "제가" in text or "나는" in text) else "IMAGINED"
-    answered = bool(clarification_answer and clarification_answer.strip())
-    return IntakeData(
-        input_summary=summary,
-        service_type=_guess_service_type(text),  # type: ignore[arg-type]
-        problem="(stub) 자유 서술에서 추출 예정",
-        target_user="(stub) 자유 서술에서 추출 예정",
-        pain_source=pain_source,  # type: ignore[arg-type]
-        maturity="RAW",
-        validation_time_budget=_coerce_budget(time_budget),  # type: ignore[arg-type]
-        needs_clarification=False,
-        clarifying_question=None,  # 추가 답변 수신 시에도 null 유지(req 1)
-        constraints=([clarification_answer.strip()] if answered else []),  # type: ignore[union-attr]
-    )
+def _guess_service_type(text: str) -> str:
+    low = text.lower()
+    if "앱" in text or "app" in low:
+        return "앱"
+    if "웹" in text or "web" in low or "사이트" in text:
+        return "웹"
+    if "자동화" in text or "automat" in low:
+        return "자동화 도구"
+    if "업무" in text or "사내" in text:
+        return "업무 개선 도구"
+    return "기타"
 
 
-def _diagnose_stub(intake: IntakeData) -> Diagnosis:
-    source = intake.pain_source
-    return Diagnosis(
-        problem_statement=intake.problem or "(stub) 문제 정의 예정",
-        target_user_assumption=f"'{intake.target_user or '미정'}'이(가) 이 도구를 실제로 쓸 것이다",
-        context_of_use="(stub) 실제 사용 순간 정의 예정",
-        crack_point=_CRACK_BY_SOURCE.get(source, _CRACK_BY_SOURCE["IMAGINED"]),
-        misread_risks=["(stub) 착각 가능성 1", "(stub) 착각 가능성 2"],
-        positive_signals=["(stub) 좋은 신호 1"],
-        diagnosis_focus=_FOCUS_BY_SOURCE.get(source, "CONTEXT_OF_USE"),  # type: ignore[arg-type]
-    )
+def _guess_pain_source(text: str) -> str:
+    if any(k in text for k in ("내가", "제가", "나는", "내 ", "나도")):
+        return "SELF"
+    if any(k in text for k in ("봤", "들었", "주변", "친구", "동료", "들이", "사람들")):
+        return "OBSERVED"
+    if any(k in text for k in ("있을 것", "많을 것", "수요", "니즈")):
+        return "ASSUMED"
+    return "IMAGINED"
 
 
-def _design_stub(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
-    budget: TimeBudget = intake.validation_time_budget
-    label = _BUDGET_LABEL.get(budget, "미정")
-    if budget in ("30_MIN", "UNKNOWN"):
-        steps = ["자가 점검 1가지", "주변 1~2명에게 질문", "기존 사례 1건 확인"]
-    elif budget == "TODAY":
-        steps = ["짧은 메시지로 3명에게 질문", "응답 소규모 수집", "수동 정리"]
-    elif budget == "TWO_DAYS":
-        steps = ["아는 대상 1~3명에게 카톡/구글시트로 직접 기록 요청", "48h 내 자발적 기록 여부 확인", "한 줄 피드백 수집"]
-    elif budget == "ONE_WEEK":
-        steps = ["작은 파일럿 운영", "반복 사용 확인", "결과 기록"]
-    else:  # TWO_WEEKS_PLUS
-        steps = ["노코드/수동 운영 파일럿", "반복 행동 확인", "지불 의향 확인"]
-    return FirstExperiment(
-        time_budget=label,
-        mission_title=f"[STUB] '{diagnosis.crack_point[:24]}…'을(를) 가장 작게 확인하기",
-        mission_steps=steps,
-        why_this_experiment="가장 먼저 깨질 전제를 돈·시간 거의 없이 확인하려고 일부러 작게 줄인 미션이다.",
-        success_criteria=["48시간 안에 협조자 1~3명 중 2명 이상이 요청한 행동을 3회 이상 하고, 1명 이상이 '도움이 된다'고 답하면 통과"],
-        failure_signals=["참여자가 행동을 1인당 1회 이하로 하거나 '필요 없다/귀찮다'고 답하면 실패"],
-        do_not_build_yet=["로그인/회원", "서버·DB·앱 개발"],
-        next_step_if_passed="통과해도 바로 개발하지 말고, 더 작은 다음 미션 또는 화면 없는 수동/노코드 프로토타입으로",
-    )
+def _guess_maturity(text: str) -> str:
+    if any(k in text for k in ("만들", "앱", "서비스", "기능", "방식으로", "구현", "솔루션")):
+        return "SOLUTION"
+    if any(k in text for k in ("문제", "불편", "번거", "어렵", "힘들")):
+        return "PROBLEM"
+    return "RAW"
+
+
+def _split_constraints(answer: str | None) -> list[str]:
+    """추가 답변을 제약 후보로 분해(결정적). 자연어 정제는 PlayMCP 챗 몫."""
+    if not answer or not answer.strip():
+        return []
+    parts = re.split(r"[.\n]|\s그리고\s|,\s", answer)
+    out = [p.strip(" .") for p in parts if len(p.strip()) >= 5]
+    return out[:5]
 
 
 # --------------------------------------------------------------------------- #
-# LLM 경로 (최소 프롬프트 — 고도화 금지) — 실패 시 예외 던져 orchestrator가 fallback
-# --------------------------------------------------------------------------- #
-def prepare_intake_llm(
-    idea_text: str, time_budget: str, clarification_answer: str | None = None
-) -> IntakeData:
-    answered = bool(clarification_answer and clarification_answer.strip())
-    prompt = (
-        "다음 아이디어 서술(과 추가 답변)을 공방 접수용 JSON으로만 정리해. 코드블록·설명 금지, JSON만.\n"
-        "필드: idea_summary(str), problem(str), target_user(str), "
-        "pain_source(SELF|OBSERVED|ASSUMED|IMAGINED), maturity(RAW|SITUATION|PROBLEM|SOLUTION), "
-        "validation_time_budget(30_MIN|TODAY|TWO_DAYS|ONE_WEEK|TWO_WEEKS_PLUS|UNKNOWN), "
-        "needs_clarification(bool), clarifying_question(str|null), "
-        "assumptions(확정 가정 str배열), constraints(명시 제약·MVP 제외·입력 주체 확정 str배열).\n"
-        "추가 답변에서 드러난 제약/범위/입력 주체는 반드시 constraints에, 확정 가정은 assumptions에 넣어라. "
-        "추가 답변으로 해소됐으면 needs_clarification=false, clarifying_question=null.\n"
-        f"검증 가능 시간 힌트: {time_budget}\n"
-        f"서술: {idea_text}\n"
-        + (f"추가 답변: {clarification_answer}\n" if answered else "")
-    )
-    data = _parse_json(call_anthropic(prompt, max_tokens=600, prefill="{"))
-    # 추가 답변을 받았으면 clarifying_question은 무조건 정리(null) — req 1
-    needs = False if answered else bool(data.get("needs_clarification", False))
-    question = None if answered else (data.get("clarifying_question") or None)
-    return IntakeData(
-        input_summary=str(data.get("idea_summary") or idea_text)[:200],
-        service_type=_guess_service_type(idea_text),  # type: ignore[arg-type]
-        problem=str(data.get("problem") or ""),
-        target_user=str(data.get("target_user") or ""),
-        pain_source=data.get("pain_source", "IMAGINED"),
-        maturity=data.get("maturity", "RAW"),
-        validation_time_budget=_coerce_budget(data.get("validation_time_budget") or time_budget),  # type: ignore[arg-type]
-        needs_clarification=needs,
-        clarifying_question=question,
-        assumptions=[str(x) for x in (data.get("assumptions") or [])][:5],
-        constraints=[str(x) for x in (data.get("constraints") or [])][:5],
-    )
-
-
-def diagnose_idea_llm(intake: IntakeData) -> Diagnosis:
-    prompt = (
-        "공방 접수 데이터를 보고 '가장 먼저 확인해야 할 균열점 1개'를 찾아 JSON만 반환해. JSON만.\n"
-        "필드: crack_point(str), misread_risks(최대2 str배열), positive_signals(최대2 str배열), "
-        "diagnosis_focus(PROBLEM_EXISTENCE|PAIN_INTENSITY|SOLUTION_FIT|WILLINGNESS|FEASIBILITY|"
-        "CONTEXT_OF_USE|OPERATION_FIT|PROBLEM_CAUSE_FIT).\n"
-        "★ constraints/assumptions는 '확정 사실'이다. 이미 정해진 입력 주체·범위·제외 항목을 균열점으로 삼지 말 것"
-        "(예: 입력 주체가 정해졌으면 '주체 미정'이 아니라 '그 주체가 그 일을 할 만큼 효용/지속 의지가 큰가'를 본다). "
-        "clarifying_question은 참고만 — 이미 답이 있으면 무시. 비난 말고 '먼저 확인할 지점'으로. SELF면 문제 존재를 묻지 말 것.\n"
-        f"constraints(반드시 준수): {intake.constraints}\n"
-        f"assumptions(확정): {intake.assumptions}\n"
-        f"접수: {intake.model_dump_json()}"
-    )
-    data = _parse_json(call_anthropic(prompt, max_tokens=500, prefill="{"))
-    return Diagnosis(
-        problem_statement=intake.problem or "",
-        target_user_assumption=f"'{intake.target_user or '미정'}'이(가) 이 도구를 실제로 쓸 것이다",
-        context_of_use=str(data.get("context_of_use") or ""),
-        crack_point=str(data.get("crack_point") or ""),
-        misread_risks=[str(x) for x in (data.get("misread_risks") or [])][:2],
-        positive_signals=[str(x) for x in (data.get("positive_signals") or [])][:2],
-        diagnosis_focus=data.get("diagnosis_focus", _FOCUS_BY_SOURCE.get(intake.pain_source, "CONTEXT_OF_USE")),
-    )
-
-
-def design_first_experiment_llm(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
-    light_rule = ""
-    if intake.validation_time_budget in _LIGHT_BUDGETS:
-        light_rule = (
-            "★ 시간 예산이 TWO_DAYS 이하다. 실험은 **혼자 또는 1~3명 협조자로 48시간 안에 실제로 수행 가능한** 수준으로만 설계한다. "
-            "5명 이상 모집·30분 이상 정식 인터뷰·복잡한 템플릿 제작·정식 프로토타입 개발은 금지. "
-            "카카오톡(나에게 보내기)·구글시트·종이 메모·짧은 DM 질문처럼 **즉시 가능한** 방식으로. 균열점 1개만 직접 겨냥.\n"
-        )
-    prompt = (
-        "균열점과 시간 예산으로 '첫 검증 미션'을 설계해 JSON만 반환해. 개발 말고 수동/노코드/질문 우선. 짧게. JSON만.\n"
-        "필드: mission_title(str), mission_steps(최대3 str배열), why_this_experiment(1~2문장 str), "
-        "success_criteria(1개 str배열), failure_signals(최대2 str배열), do_not_build_yet(최대2 str배열), next_step_if_passed(str).\n"
-        "★ success_criteria·failure_signals는 추상 표현 금지 — 사용자가 48시간 뒤 직접 통과/실패를 판정할 수 있게 "
-        "숫자·행동·시간 기준을 반드시 포함한다(몇 명 중 몇 명, 몇 시간 안에, 몇 회 이상 행동, 어떤 말을 하면 통과/실패). "
-        "'신호가 보인다'·'반응 없음'처럼 모호한 문장 금지. 단 각 항목은 **1문장으로 간결하게**(장황한 수식·괄호 남발 금지).\n"
-        "★ next_step_if_passed는 바로 본격 개발이 아니라, 더 작은 다음 미션 또는 최소 수동/노코드 프로토타입으로 이어지게 한다.\n"
-        "★ constraints를 반드시 지킨다 — 위반하는 실험 금지(예: 제외된 연동·정해진 입력 주체를 바꾸는 실험 금지). "
-        "constraints에 정해진 범위 안에서 균열점을 검증하라.\n"
-        + light_rule
-        + f"constraints(반드시 준수): {intake.constraints}\n"
-        + f"시간예산: {intake.validation_time_budget} / 균열점: {diagnosis.crack_point}"
-    )
-    data = _parse_json(call_anthropic(prompt, max_tokens=900, prefill="{"))  # 잘림 방지(간결 제약과 병행)
-    label = _BUDGET_LABEL.get(intake.validation_time_budget, "미정")
-    return FirstExperiment(
-        time_budget=label,
-        mission_title=str(data.get("mission_title") or ""),
-        mission_steps=[str(x) for x in (data.get("mission_steps") or [])][:3],
-        why_this_experiment=str(data.get("why_this_experiment") or ""),
-        success_criteria=[str(x) for x in (data.get("success_criteria") or [])][:1],
-        failure_signals=[str(x) for x in (data.get("failure_signals") or [])][:2] or ["48시간 내 참여자 입력 0건"],
-        do_not_build_yet=[str(x) for x in (data.get("do_not_build_yet") or [])][:2],
-        next_step_if_passed=str(data.get("next_step_if_passed") or ""),
-    )
-
-
-# --------------------------------------------------------------------------- #
-# orchestrator — tool이 호출하는 진입점 (LLM 시도 → 실패 시 stub). 항상 성공.
+# 1) prepare_intake — 룰 기반 구조화
 # --------------------------------------------------------------------------- #
 def prepare_intake(
     idea_text: str, time_budget: str = "UNKNOWN", clarification_answer: str | None = None
 ) -> IntakeData:
-    reason = _block_reason()
-    if reason is None:
-        try:
-            res = prepare_intake_llm(idea_text, time_budget, clarification_answer)
-            res.meta = ToolMeta(source="llm")
-            return res
-        except LLMTimeout:
-            reason = "timeout"
-        except Exception:  # noqa: BLE001 (LLMError·검증오류 등 → fallback)
-            reason = "api_error"
-    res = _prepare_intake_stub(idea_text, time_budget, clarification_answer)
-    res.meta = ToolMeta(source="stub", fallback_reason=reason)  # type: ignore[arg-type]
-    return res
+    text = (idea_text or "").strip()
+    summary = (text[:140] + "…") if len(text) > 140 else (text or "(입력 없음)")
+    constraints = _split_constraints(clarification_answer)
+    return IntakeData(
+        input_summary=summary,
+        service_type=_guess_service_type(text),  # type: ignore[arg-type]
+        problem="",  # 자연어 정제는 PlayMCP 챗이 담당(서버는 재료만)
+        target_user="",
+        pain_source=_guess_pain_source(text),  # type: ignore[arg-type]
+        maturity=_guess_maturity(text),  # type: ignore[arg-type]
+        validation_time_budget=_coerce_budget(time_budget),  # type: ignore[arg-type]
+        needs_clarification=False,
+        clarifying_question=None,
+        assumptions=[],
+        constraints=constraints,
+    )
 
 
+# --------------------------------------------------------------------------- #
+# 2) diagnose_idea — 포커스 기반 균열점 템플릿
+# --------------------------------------------------------------------------- #
 def diagnose(intake: IntakeData) -> Diagnosis:
-    reason = _block_reason()
-    if reason is None:
-        try:
-            res = diagnose_idea_llm(intake)
-            res.meta = ToolMeta(source="llm")
-            return res
-        except LLMTimeout:
-            reason = "timeout"
-        except Exception:  # noqa: BLE001
-            reason = "api_error"
-    res = _diagnose_stub(intake)
-    res.meta = ToolMeta(source="stub", fallback_reason=reason)  # type: ignore[arg-type]
-    return res
+    focus = _FOCUS_BY_SOURCE.get(intake.pain_source, _DEFAULT_FOCUS)
+    prof = _FOCUS.get(focus, _FOCUS[_DEFAULT_FOCUS])
+    user = intake.target_user or "사용자"
+    # constraints로 입력 주체/범위가 정해졌으면 '주체 미정'이 아니라 효용/지속을 본다
+    if intake.constraints and focus in ("PROBLEM_EXISTENCE", "CONTEXT_OF_USE"):
+        focus = "WILLINGNESS"
+        prof = _FOCUS[focus]
+    crack = prof["crack"].format(u=user)
+    return Diagnosis(
+        problem_statement=intake.problem or "",
+        target_user_assumption=f"'{user}'이(가) 이 방식을 실제로 쓸 것이다",
+        context_of_use="",
+        crack_point=crack,
+        misread_risks=[
+            "'좋아 보인다'(관심)와 '실제로 한다'(행동)를 혼동",
+            "한두 명의 호의적 반응을 전체 수요로 일반화",
+        ],
+        positive_signals=["검증할 대상·행동이 구체적임", "48시간 내 직접 확인 가능한 범위"],
+        diagnosis_focus=focus,  # type: ignore[arg-type]
+    )
 
 
+# --------------------------------------------------------------------------- #
+# 3) design_first_experiment — (focus, time_budget, service_type) 기반 미션 템플릿
+# --------------------------------------------------------------------------- #
 def design(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
-    reason = _block_reason()
-    if reason is None:
-        try:
-            res = design_first_experiment_llm(intake, diagnosis)
-            res.meta = ToolMeta(source="llm")
-            return res
-        except LLMTimeout:
-            reason = "timeout"
-        except Exception:  # noqa: BLE001
-            reason = "api_error"
-    res = _design_stub(intake, diagnosis)
-    res.meta = ToolMeta(source="stub", fallback_reason=reason)  # type: ignore[arg-type]
-    return res
+    budget = intake.validation_time_budget if intake.validation_time_budget in _BUDGET else "UNKNOWN"
+    b = _BUDGET[budget]
+    focus = diagnosis.diagnosis_focus if diagnosis.diagnosis_focus in _FOCUS else _DEFAULT_FOCUS
+    f = _FOCUS[focus]
+
+    steps = [
+        b["method"],
+        f"{b['hours']} 동안 {f['act']}하는지와 횟수를 기록",
+        "끝나고 한 줄 피드백(긍정/부정 표현) 받기",
+    ]
+    success = (
+        f"{b['hours']} 안에 {b['who']} {b['n']} {f['act']}하고, "
+        f"1명 이상이 '{f['yes']}'고 말하면 통과"
+    )
+    failure = [
+        f"{f['act']}한 횟수가 1회 이하이거나 시간이 지날수록 줄어듦",
+        f"참여자가 '{f['no']}'고 말함",
+    ]
+
+    # 지금 만들지 말 것: service_type 기본 + constraints에서 제외/연동 언급 반영
+    dnb = list(_SERVICE_DNB.get(intake.service_type, _SERVICE_DNB["기타"]))
+    for c in intake.constraints:
+        if ("연동" in c or "제외" in c or "안 함" in c or "하지 않" in c) and len(dnb) < 3:
+            dnb.append("constraints에서 제외한 것(외부 연동 등)")
+            break
+
+    return FirstExperiment(
+        time_budget=_BUDGET_LABEL.get(budget, "미정"),
+        mission_title=f"균열점 확인: {diagnosis.crack_point}",
+        mission_steps=steps[:3],
+        why_this_experiment=(
+            "이 균열점은 말이 아니라 '실제 행동'으로만 확인되므로, 개발 전에 "
+            f"{b['hours']} 안에 가장 싸게 검증하려고 일부러 작게 줄인 미션이다."
+        ),
+        success_criteria=[success],
+        failure_signals=failure[:2],
+        do_not_build_yet=dnb[:3],
+        next_step_if_passed="통과해도 바로 개발하지 말고, 더 작은 다음 미션 또는 화면 없는 수동/노코드 프로토타입으로",
+    )
