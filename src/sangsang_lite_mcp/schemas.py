@@ -24,15 +24,14 @@ ServiceType = Literal["웹", "앱", "자동화 도구", "업무 개선 도구", 
 PainSource = Literal["SELF", "OBSERVED", "ASSUMED", "IMAGINED"]
 Maturity = Literal["RAW", "SITUATION", "PROBLEM", "SOLUTION"]
 TimeBudget = Literal["30_MIN", "TODAY", "TWO_DAYS", "ONE_WEEK", "TWO_WEEKS_PLUS", "UNKNOWN"]
+# 진단 포커스 6종 — 아이디어 유형별로 '먼저 깨질 위험 가설'이 다르다.
 DiagnosisFocus = Literal[
-    "PROBLEM_EXISTENCE",
-    "PAIN_INTENSITY",
-    "SOLUTION_FIT",
-    "WILLINGNESS",
-    "FEASIBILITY",
-    "CONTEXT_OF_USE",
-    "OPERATION_FIT",
-    "PROBLEM_CAUSE_FIT",
+    "PAIN_INTENSITY",       # 실제로 행동을 바꿀 만큼 불편한가
+    "CONTEXT_OF_USE",       # 쓰일 순간이 분명한가
+    "WILLINGNESS",          # 귀찮은 행동을 할 의지가 있는가
+    "ALTERNATIVE_BEHAVIOR", # 기존 대체재를 이길 수 있는가
+    "DATA_INPUT_BURDEN",    # 입력 부담을 감수할 수 있는가
+    "TIMING_URGENCY",       # 놓치면 손해 나는 타이밍인가
 ]
 
 

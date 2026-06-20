@@ -35,23 +35,78 @@ _BUDGET = {
     "UNKNOWN":       {"method": "아는 {a} 1명 또는 2명에게 카톡으로 질문(가장 가볍게)", "subject": "{a} 1명 또는 2명 중 1명 이상이", "n": "2회 이상", "hours": "오늘 또는 내일"},
 }
 
-# 진단 포커스별 — 균열점·확인 행동(verb 어간)·통과/실패 표현. act는 "{n} {act}하고"에 들어간다.
+# 진단 포커스 6종 — 같은 '카톡 질문'이라도 무엇을 확인하는지가 아이디어마다 다르다.
+#   crack   : 결과카드의 균열점/목표   ({u}=대상 사용자, {j}=조사)
+#   act     : 미션 2단계에서 '무엇을 관찰·기록하는지'(명사구; "...를 기록"에 들어감)
+#   success : 성공 기준 본문(앞에 기간+대상 주어가 붙는다)
+#   failure : 실패 신호(보류) 목록
+# ※ 출력 문자열에 틸드(~)·'+' 금지 — 마크다운 깨짐. 범위는 자연어로.
 _FOCUS = {
-    "WILLINGNESS":       {"crack": "{u}{j} 직접 기록·확인하는 행동을 꾸준히 할 동기·의지가 충분한가", "act": "스스로 직접 기록·확인", "yes": "다음에도 해볼 것 같다/도움 됐다", "no": "번거롭다/다시 안 할 것 같다"},
-    "PROBLEM_EXISTENCE": {"crack": "이 문제를 실제로 겪는 {u}{j} 존재하는가", "act": "겪는 상황을 구체적으로 언급", "yes": "맞아, 나도 그래서 불편하다", "no": "그건 별 문제 아니다"},
-    "PAIN_INTENSITY":    {"crack": "이 문제가 {u}의 행동을 바꿀 만큼 실제로 불편한가", "act": "이 불편을 자주·심하게 겪는다고 언급", "yes": "자주 겪어서 바꾸고 싶다", "no": "가끔 있지만 참을 만하다"},
-    "SOLUTION_FIT":      {"crack": "제안한 방식이 {u}의 문제에 실제로 맞는가", "act": "그 방식이 자기 상황에 맞다고 확인", "yes": "이런 방식이면 쓰겠다", "no": "이 방식은 내 상황엔 안 맞다"},
-    "FEASIBILITY":       {"crack": "이 방식이 {u}의 환경에서 실제로 작동·실행 가능한가", "act": "실제 환경에서 시도", "yes": "되네, 쓸 만하다", "no": "환경 때문에 안 된다"},
-    "CONTEXT_OF_USE":    {"crack": "{u}의 실제 사용 순간과 첫 사용자가 구체적으로 성립하는가", "act": "쓸 순간을 구체적으로 지목", "yes": "이럴 때(구체 상황) 쓰겠다", "no": "딱히 쓸 순간이 안 떠오른다"},
-    "OPERATION_FIT":     {"crack": "{u}{j} 이 방식을 지속적으로 운영·유지할 수 있는가", "act": "끊기지 않고 반복 수행", "yes": "계속 유지할 수 있겠다", "no": "며칠 만에 흐지부지된다"},
-    "PROBLEM_CAUSE_FIT": {"crack": "이 해결책이 진짜 원인을 겨냥하는가", "act": "진짜 원인을 짚어 말", "yes": "그게 진짜 원인 맞다", "no": "원인은 다른 데 있다"},
+    "PAIN_INTENSITY": {
+        "crack": "이 문제가 {u}의 행동을 바꿀 만큼 실제로 불편한가",
+        "act": "최근 겪은 실제 사례와 같은 문제가 반복되는지를",
+        "success": "최근 실제 사례를 구체적으로 말하고, 같은 문제가 반복된다고 하면 통과",
+        "failure": ["'가끔 있긴 하다' 수준이거나 최근 사례를 바로 떠올리지 못하면 보류",
+                     "'그건 별 문제 아니다'라고 말하면 보류"],
+    },
+    "CONTEXT_OF_USE": {
+        "crack": "이 도구가 {u}에게 실제로 쓰일 순간이 분명한가",
+        "act": "언제·어디서·무엇을 하다가 쓸지를",
+        "success": "'언제, 어디서, 무엇을 하다가' 쓸지 구체적으로 말하면 통과",
+        "failure": ["쓸 만한 순간을 설명하지 못하면 보류",
+                     "'있으면 좋긴 하다' 수준에 머무르면 보류"],
+    },
+    "WILLINGNESS": {
+        "crack": "{u}{j} 직접 입력·기록·확인하는 귀찮은 행동을 할 의지가 있는가",
+        "act": "앱 없이 직접 한 번 해봤는지와 다음에도 할 의향을",
+        "success": "앱 없이도 카톡·메모장·시트로 직접 한 번 해보고, 다음에도 해볼 의향이 있다고 하면 통과",
+        "failure": ["좋다고 말하지만 직접 해보지는 않으면 보류",
+                     "번거롭다고 느껴 다시 안 하면 보류"],
+    },
+    "ALTERNATIVE_BEHAVIOR": {
+        "crack": "{u}에게 이미 쓰는 대체재가 있는지, 새 방식이 기존 습관을 이길 수 있는가",
+        "act": "지금 쓰는 방식과 그 불편함을",
+        "success": "지금 쓰는 방식의 불편함을 말하고, 새 방식이 더 낫다고 이유를 설명하면 통과",
+        "failure": ["기존 메모장·카톡·캘린더·종이 등으로 충분하다고 말하면 보류",
+                     "굳이 바꿀 이유를 대지 못하면 보류"],
+    },
+    "DATA_INPUT_BURDEN": {
+        "crack": "{u}{j} 필요한 정보를 입력하는 부담을 감수할 수 있는가",
+        "act": "직접 입력해본 결과와 부담 정도를",
+        "success": "필요한 정보를 1회 이상 직접 입력해보고, 입력 시간이 부담되지 않는다고 하면 통과",
+        "failure": ["입력할 정보가 많거나 귀찮아서 다시 안 하겠다고 하면 보류",
+                     "한 번 입력한 뒤 이어가지 않으면 보류"],
+    },
+    "TIMING_URGENCY": {
+        "crack": "이 도구가 필요한 순간이, 놓치면 손해가 나는 타이밍인가",
+        "act": "그 순간 바로 필요한지와 늦으면 손해인지를",
+        "success": "'그 순간 바로 알림·확인이 필요하다'고 말하고, 늦으면 실제 불편·손해가 있다고 설명하면 통과",
+        "failure": ["나중에 확인해도 괜찮다고 하면 보류",
+                     "즉시성이 중요하지 않다고 하면 보류"],
+    },
 }
-_DEFAULT_FOCUS = "WILLINGNESS"
+_DEFAULT_FOCUS = "CONTEXT_OF_USE"
 
-_FOCUS_BY_SOURCE = {
-    "SELF": "SOLUTION_FIT", "OBSERVED": "PAIN_INTENSITY",
-    "ASSUMED": "PROBLEM_EXISTENCE", "IMAGINED": "CONTEXT_OF_USE",
-}
+# 아이디어 유형 → 포커스 선택(우선순위 룰, 결정적). 위에서부터 처음 맞는 것을 택한다.
+_SIG_TIMING = ("알림", "알람", "팝업", "뜨는", "뜨게", "띄우", "실시간", "즉시", "바로",
+               "놓치", "마감", "타이밍", "리마인", "제때", "그 순간")
+_SIG_INPUT = ("입력", "기록", "장부", "가계부", "식단", "재료", "운동", "일지", "로그", "다이어리")
+_SIG_HABIT = ("매일", "꾸준", "습관", "루틴", "일기", "운동", "매번")
+_SIG_ALT = ("정리", "메모", "일정", "조율", "추천", "검색", "관리", "캘린더", "목록", "비교")
+
+
+def _select_focus(intake: "IntakeData") -> str:
+    t = " ".join((intake.input_summary, intake.desired_behavior, intake.context_of_use,
+                  intake.problem, " ".join(intake.constraints)))
+    if any(k in t for k in _SIG_TIMING):
+        return "TIMING_URGENCY"
+    if any(k in t for k in _SIG_INPUT):
+        return "WILLINGNESS" if any(k in t for k in _SIG_HABIT) else "DATA_INPUT_BURDEN"
+    if any(k in t for k in _SIG_ALT):
+        return "ALTERNATIVE_BEHAVIOR"
+    if intake.pain_source in ("SELF", "OBSERVED"):
+        return "PAIN_INTENSITY"
+    return _DEFAULT_FOCUS
 
 # service_type별 '지금 만들지 말 것'
 _SERVICE_DNB = {
@@ -78,6 +133,23 @@ def _josa(word: str, pair: tuple[str, str] = ("이", "가")) -> str:
     if "가" <= last <= "힣":
         return pair[0] if (ord(last) - 0xAC00) % 28 else pair[1]
     return pair[1]
+
+
+# 의도 꼬리말 제거 — '...만들고 싶어 먼저 확인해줘' 류가 필드 추출에 섞이지 않게.
+# (서비스 명사 '앱/도구'는 보존; '확인앱'처럼 명사에 붙은 '확인'은 건드리지 않음)
+_TAIL_RE = re.compile(
+    r"\s*(?:"
+    r"먼저\s*(?:확인|검증|점검)\S*"
+    r"|(?:확인|검증|점검)\s*(?:해줘|해주\S*|해|좀|부탁\S*)"
+    r"|만들?고?\s*싶\S*|만들래\S*|만들고자\S*|만들\s*거\S*|만들어\S*|만들고\s*있\S*"
+    r"|개발하?고?\s*싶\S*|하고\s*싶\S*|했으면\s*좋겠\S*|구현하?고?\s*싶\S*"
+    r")"
+)
+
+
+def _strip_intent_tail(text: str) -> str:
+    """'만들고 싶어', '먼저 확인해줘' 같은 의도 표현 제거. 서비스 명사는 보존."""
+    return re.sub(r"\s{2,}", " ", _TAIL_RE.sub(" ", text)).strip(" ,.")
 
 
 def _guess_service_type(text: str) -> str:
@@ -121,6 +193,8 @@ def _guess_maturity(text: str) -> str:
 # idea_text에서 대상 사용자 추출 (라이더 우선)
 _USER_RULES = [
     (("라이더", "배달"), "배달 라이더"),
+    (("자취생",), "자취생"),
+    (("대학생",), "대학생"),
     (("학생",), "학생"),
     (("직장인", "회사원"), "직장인"),
     (("자영업", "사장", "소상공", "가게 주인"), "자영업자"),
@@ -158,9 +232,13 @@ def _rich_target_user(text: str, answer: str | None) -> str:
             phrase = re.sub(r"^(주\s*사용자는|대상은|사용자는)\s*", "", m.group(1)).strip(" ,.")
             if 2 <= len(phrase) <= 40:
                 return phrase
-        # '대상' 표현은 없지만 사용자 키워드가 답변에 있고 짧으면 답변 자체를 대상 구절로
-        if any(any(k in ans for k in kws) for kws, _ in _USER_RULES) and len(ans) <= 40:
-            return ans.rstrip(" .야요다이").strip()
+        # '대상' 표현은 없지만 사용자 키워드가 답변에 있으면, 답변의 '첫 구절'만 대상으로
+        # (괄호·쉼표 뒤 제약/예시는 떼어내 필드가 섞이지 않게 — req4)
+        if any(any(k in ans for k in kws) for kws, _ in _USER_RULES):
+            head = re.split(r"[(,\n.]", ans)[0].rstrip(" .야요다이").strip()
+            if 2 <= len(head) <= 30:
+                return head
+            return _guess_target_user(ans) or head[:30]
     return _guess_target_user(text + " " + ans)
 
 
@@ -178,7 +256,11 @@ def _extract_problem(text: str) -> str:
 
 
 def _constraints_from_text(text: str) -> list[str]:
-    """idea_text의 범위/방식 표현을 제약으로 정규화(결정적)."""
+    """범위/방식을 가리키는 '키워드'가 있을 때만 제약으로 정규화(결정적).
+
+    clarification 답변을 통째로 쪼개지 않는다 — 괄호·쉼표·'대학생/직장인 모두 포함'
+    같은 대상 설명이 제약으로 잘못 분해되는 것을 방지(키워드 매칭만 수행).
+    """
     out: list[str] = []
     if any(k in text for k in ("연동하지 않", "연동 없이", "연동 안", "연동은")):
         out.append("기존 앱과 직접 연동하지 않음(MVP)")
@@ -190,16 +272,9 @@ def _constraints_from_text(text: str) -> list[str]:
         out.append("수동 방식으로 운영")
     if "개인 메모" in text:
         out.append("개인 메모 방식")
+    if any(k in text for k in ("제외", "빼고", "은 빼", "는 빼", "만 만들", "만 우선")):
+        out.append("일부 기능은 MVP 범위에서 제외")
     return out
-
-
-def _split_constraints(answer: str | None) -> list[str]:
-    """추가 답변을 제약 후보로 분해(결정적). 자연어 정제는 PlayMCP 챗 몫."""
-    if not answer or not answer.strip():
-        return []
-    parts = re.split(r"[.\n]|\s그리고\s|,\s", answer)
-    out = [p.strip(" .") for p in parts if len(p.strip()) >= 5]
-    return out[:5]
 
 
 def _default_assumptions(service_type: str, target_user: str) -> list[str]:
@@ -212,18 +287,42 @@ def _default_assumptions(service_type: str, target_user: str) -> list[str]:
     ]
 
 
-def _extract_context(text: str) -> str:
-    """사용 순간/상황 구절 추출(있으면 보존). 앱 이름만으로는 안 잡힘."""
-    m = re.search(r"([^.\n]{0,30}(?:받았을\s*때|할\s*때|쓸\s*때|일\s*때|순간|상황|배차|콜|도중|중에))", text)
-    return m.group(1).strip(" ,.")[:50] if m else ""
+_CTX_RE = re.compile(
+    r"([^.\n]{0,18}?(?:받았을\s*때|받을\s*때|할\s*때|쓸\s*때|볼\s*때|일\s*때|순간|상황|도중|중에))"
+)
+# 앞에 붙은 주어('배달라이더가 ' 등)를 떼어내 맥락만 남긴다
+_LEAD_SUBJECT_RE = re.compile(r"^.{1,12}?(?:가|이|은|는|께서)\s+")
 
 
-def _extract_behavior(text: str) -> str:
-    """핵심 행동 구절 추출(동사부터 시작해 깔끔히). '메모'·'앱' 같은 명사(앱 종류)는 행동으로 보지 않음."""
-    m = re.search(
-        r"((?:직접\s*|자동\s*)?(?:입력|기록|작성|표시|띄우|뜨게|뜨는|알림|추천|정리|저장|검색|공유|관리)[^.\n]{0,12})", text
-    )
-    return m.group(1).strip(" ,.")[:40] if m else ""
+def _extract_context(text: str, target_user: str = "") -> str:
+    """사용 순간/상황 구절 추출(있으면 보존). 주어/대상은 떼어내 맥락만 남긴다."""
+    m = _CTX_RE.search(text)
+    if not m:
+        return ""
+    ctx = m.group(1).strip(" ,.")
+    ctx = _LEAD_SUBJECT_RE.sub("", ctx, count=1)  # 'X가 ...' 주어 제거
+    if target_user and ctx.startswith(target_user):
+        ctx = ctx[len(target_user):].lstrip(" 가이은는의")
+    return ctx.strip(" ,.")[:40]
+
+
+# 행동 동사 어간(명사 '앱/도구/메모'는 행동이 아님). 앞의 한정어(직접/자동)는 포함.
+_BEH_RE = re.compile(
+    r"((?:직접\s*|자동(?:으로)?\s*)?(?:입력|기록|작성|표시|띄우|뜨게|뜨는|알림|알려|추천|정리|저장|검색|공유|관리|확인|조회|계산)[가-힣]{0,6})"
+)
+# 행동에서 잘라낼 꼬리(서비스 명사·의도)
+_BEH_CUT_RE = re.compile(r"\s*(?:앱|어플|도구|서비스|기능|시스템|플랫폼|만들|먼저|좀|것)")
+
+
+def _extract_behavior(text: str, context: str = "") -> str:
+    """핵심 행동 구절 추출(동사부터). 서비스 명사·의도 꼬리를 잘라내고 맥락과 중복 방지."""
+    m = _BEH_RE.search(text)
+    if not m:
+        return ""
+    beh = _BEH_CUT_RE.split(m.group(1))[0].strip(" ,.")[:24]
+    if beh and context and (beh in context or context in beh):
+        return ""  # 맥락과 동일/포함이면 행동 비움(필드 혼선 방지)
+    return beh
 
 
 # 부족 필드별 질문 (이미 말한 건 묻지 않음)
@@ -240,18 +339,21 @@ _CLARIFY_Q = {
 def prepare_intake(
     idea_text: str, time_budget: str = "UNKNOWN", clarification_answer: str | None = None
 ) -> IntakeData:
-    text = (idea_text or "").strip()
-    combined = text + " " + (clarification_answer or "")
+    raw = (idea_text or "").strip()
+    text = _strip_intent_tail(raw)  # '만들고싶어 먼저 확인해줘' 등 의도 꼬리 제거
+    answer = (clarification_answer or "").strip()
+    combined = (text + " " + answer).strip()
     summary = (text[:140] + "…") if len(text) > 140 else (text or "(입력 없음)")
     service_type = _guess_service_type(text)
-    target_user = _rich_target_user(text, clarification_answer)
-    # 제약: idea_text 정규화 + 추가 답변 분해 (중복 제거, 순서 보존)
+    target_user = _rich_target_user(text, answer)
+    # 제약: 키워드 기반만(답변을 통째로 쪼개지 않음 — req5 방어). 중복 제거·순서 보존
     constraints: list[str] = []
-    for c in _constraints_from_text(combined) + _split_constraints(clarification_answer):
+    for c in _constraints_from_text(combined):
         if c not in constraints:
             constraints.append(c)
-    context = _extract_context(combined)
-    behavior = _extract_behavior(combined)
+    # 필드 분리(req4): 맥락 추출 시 target 주어 제거, 행동은 맥락과 중복되면 비움
+    context = _extract_context(combined, target_user)
+    behavior = _extract_behavior(combined, context)
 
     # 필수 확인 3필드: target_user / context_of_use / desired_behavior
     missing = []
@@ -261,7 +363,9 @@ def prepare_intake(
         missing.append("context_of_use")
     if not behavior:
         missing.append("desired_behavior")
-    needs = bool(missing)
+    # req3: 사용자가 이미 답(clarification_answer)을 줬다면 같은 라운드를 반복하지 않는다.
+    #       남은 빈 필드는 assumptions_if_continue로 메우고 다음 단계로 진행.
+    needs = bool(missing) and not answer
     # 질문 수: 기본 최대 2개. 매우 부실(3개 모두 부족)이면 최대 3개. 4개 이상 없음.
     cap = 3 if len(missing) == 3 else 2
     questions = [_CLARIFY_Q[m] for m in missing][:cap] if needs else []
@@ -310,18 +414,14 @@ def _ensure_normalized(intake: IntakeData) -> IntakeData:
 # --------------------------------------------------------------------------- #
 def diagnose(intake: IntakeData) -> Diagnosis:
     intake = _ensure_normalized(intake)
-    focus = _FOCUS_BY_SOURCE.get(intake.pain_source, _DEFAULT_FOCUS)
     user = intake.target_user or "사용자"
-    # 해결책(SOLUTION)이 있고 방식·주체가 constraints로 정해졌으면, 핵심 위험은 '실제로 할 의지'(WILLINGNESS)
-    if intake.constraints and (
-        intake.maturity == "SOLUTION" or focus in ("PROBLEM_EXISTENCE", "CONTEXT_OF_USE")
-    ):
-        focus = "WILLINGNESS"
+    # 아이디어 유형 신호로 균열점 포커스 선택 — 같은 카톡 질문이라도 확인 대상이 달라진다.
+    focus = _select_focus(intake)
     prof = _FOCUS.get(focus, _FOCUS[_DEFAULT_FOCUS])
     crack = prof["crack"].format(u=user, j=_josa(user))
     return Diagnosis(
         problem_statement=intake.problem or "",
-        target_user_assumption=f"'{user}'이(가) 이 방식을 실제로 쓸 것이다",
+        target_user_assumption=f"'{user}'{_josa(user)} 이 방식을 실제로 쓸 것이다",
         context_of_use=intake.context_of_use,
         crack_point=crack,
         misread_risks=[
@@ -346,19 +446,14 @@ def design(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
     actor = intake.target_user or "협조자"
     method = b["method"].format(a=actor)
     subject = b["subject"].format(a=actor)
+    # step1(접촉 방법)·기간은 시간 예산이, 무엇을 확인하는지(act/success/failure)는 포커스가 정한다.
     steps = [
         method,
-        f"{b['hours']} 동안 {f['act']}하는지와 횟수를 기록",
+        f"{b['hours']} 동안 {f['act']} 기록",
         "끝나고 한 줄 피드백(긍정/부정 표현) 받기",
     ]
-    success = (
-        f"{b['hours']} 안에 {subject} {b['n']} {f['act']}하고, "
-        f"1명 이상이 '{f['yes']}'고 말하면 통과"
-    )
-    failure = [
-        f"{f['act']}한 횟수가 1회 이하이거나 시간이 지날수록 줄어듦",
-        f"참여자가 '{f['no']}'고 말함",
-    ]
+    success = f"{b['hours']} 안에 {subject} {f['success']}"
+    failure = list(f["failure"])
 
     # 지금 만들지 말 것: service_type 기본 + constraints에서 제외/연동 언급 반영
     dnb = list(_SERVICE_DNB.get(intake.service_type, _SERVICE_DNB["기타"]))
