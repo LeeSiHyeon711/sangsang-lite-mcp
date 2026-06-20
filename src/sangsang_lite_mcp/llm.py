@@ -215,10 +215,10 @@ def _design_stub(intake: IntakeData, diagnosis: Diagnosis) -> FirstExperiment:
         mission_title=f"[STUB] '{diagnosis.crack_point[:24]}…'을(를) 가장 작게 확인하기",
         mission_steps=steps,
         why_this_experiment="가장 먼저 깨질 전제를 돈·시간 거의 없이 확인하려고 일부러 작게 줄인 미션이다.",
-        success_criteria=["(stub) 핵심 전제가 사실이라는 신호가 보인다"],
-        failure_signals=["(stub) 아무도 반응하지 않는다"],
-        do_not_build_yet=["로그인/회원", "서버/DB", "예쁜 UI"],
-        next_step_if_passed="(stub) 신호가 보이면 더 작은 다음 미션 또는 본 공방 1단계로",
+        success_criteria=["48시간 안에 협조자 1~3명 중 2명 이상이 요청한 행동을 3회 이상 하고, 1명 이상이 '도움이 된다'고 답하면 통과"],
+        failure_signals=["참여자가 행동을 1인당 1회 이하로 하거나 '필요 없다/귀찮다'고 답하면 실패"],
+        do_not_build_yet=["로그인/회원", "서버·DB·앱 개발"],
+        next_step_if_passed="통과해도 바로 개발하지 말고, 더 작은 다음 미션 또는 화면 없는 수동/노코드 프로토타입으로",
     )
 
 
@@ -297,14 +297,18 @@ def design_first_experiment_llm(intake: IntakeData, diagnosis: Diagnosis) -> Fir
     prompt = (
         "균열점과 시간 예산으로 '첫 검증 미션'을 설계해 JSON만 반환해. 개발 말고 수동/노코드/질문 우선. 짧게. JSON만.\n"
         "필드: mission_title(str), mission_steps(최대3 str배열), why_this_experiment(1~2문장 str), "
-        "success_criteria(1개 str배열), do_not_build_yet(최대2 str배열), next_step_if_passed(str).\n"
+        "success_criteria(1개 str배열), failure_signals(최대2 str배열), do_not_build_yet(최대2 str배열), next_step_if_passed(str).\n"
+        "★ success_criteria·failure_signals는 추상 표현 금지 — 사용자가 48시간 뒤 직접 통과/실패를 판정할 수 있게 "
+        "숫자·행동·시간 기준을 반드시 포함한다(몇 명 중 몇 명, 몇 시간 안에, 몇 회 이상 행동, 어떤 말을 하면 통과/실패). "
+        "'신호가 보인다'·'반응 없음'처럼 모호한 문장 금지.\n"
+        "★ next_step_if_passed는 바로 본격 개발이 아니라, 더 작은 다음 미션 또는 최소 수동/노코드 프로토타입으로 이어지게 한다.\n"
         "★ constraints를 반드시 지킨다 — 위반하는 실험 금지(예: 제외된 연동·정해진 입력 주체를 바꾸는 실험 금지). "
         "constraints에 정해진 범위 안에서 균열점을 검증하라.\n"
         + light_rule
         + f"constraints(반드시 준수): {intake.constraints}\n"
         + f"시간예산: {intake.validation_time_budget} / 균열점: {diagnosis.crack_point}"
     )
-    data = _parse_json(call_anthropic(prompt, max_tokens=700, prefill="{"))  # 제약 반영으로 출력↑ → 잘림 방지
+    data = _parse_json(call_anthropic(prompt, max_tokens=800, prefill="{"))  # 필드↑(failure_signals)로 잘림 방지
     label = _BUDGET_LABEL.get(intake.validation_time_budget, "미정")
     return FirstExperiment(
         time_budget=label,
@@ -312,7 +316,7 @@ def design_first_experiment_llm(intake: IntakeData, diagnosis: Diagnosis) -> Fir
         mission_steps=[str(x) for x in (data.get("mission_steps") or [])][:3],
         why_this_experiment=str(data.get("why_this_experiment") or ""),
         success_criteria=[str(x) for x in (data.get("success_criteria") or [])][:1],
-        failure_signals=[str(x) for x in (data.get("failure_signals") or [])][:2] or ["반응 없음"],
+        failure_signals=[str(x) for x in (data.get("failure_signals") or [])][:2] or ["48시간 내 참여자 입력 0건"],
         do_not_build_yet=[str(x) for x in (data.get("do_not_build_yet") or [])][:2],
         next_step_if_passed=str(data.get("next_step_if_passed") or ""),
     )
